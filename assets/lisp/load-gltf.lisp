@@ -224,9 +224,9 @@
         (go (table-get node "children" '()) walk))))
 
 (define (gltf-scene-walk doc)
-  (let ((nodes (table-get doc "nodes" '()))
-        (scenes (table-get doc "scenes" '()))
-        (scene (nth scenes (table-get doc "scene" 0))))
+  (let* ((nodes (table-get doc "nodes" '()))
+         (scenes (table-get doc "scenes" '()))
+         (scene (nth scenes (table-get doc "scene" 0))))
     (define (go kids acc)
       (if (null? kids)
           acc
