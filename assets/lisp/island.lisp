@@ -63,7 +63,7 @@
                                         (vi (+ i 1) j))))
             (go-cols i (+ j 1)))))
     (define (go-rows i)
-      (if (> i n)
+      (if (>= i n)
           #f
           (begin (go-cols i 0) (go-rows (+ i 1)))))
     (dotimes (i (+ n 1))
