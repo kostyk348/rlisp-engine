@@ -1,5 +1,10 @@
 // src/main.rs — Rust-ядро: запускает Lisp-мир и вызывает update(dt)/draw() каждый кадр.
 // Горячий цикл — Lisp; Rust здесь делает только HAL-работу: время, ввод, кадры, hot reload.
+//
+// clippy новых линеек знает линты, которых нет в 1.83 (MSRV поддерживаемого
+// rustc): manual_is_multiple_of требует std 1.87 — на 1.83 используем `%`.
+#![allow(unknown_lints)]
+#![allow(clippy::manual_is_multiple_of)]
 
 mod editor;
 mod gpu;
