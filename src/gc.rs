@@ -392,22 +392,20 @@ fn mark_value(v: &Value, work: &mut Vec<Gc>, seen_rc: &mut HashSet<usize>, depth
         // Rc-контейнеры прозрачны для маркировки: заходим внутрь, чтобы
         // пары/замыкания внутри живого контейнера не были собраны.
         // seen_rc по адресу контейнера защищает от циклов (таблица в себе).
-        Value::Vector(r) => {
-            if seen_rc.insert(std::rc::Rc::as_ptr(r) as *const () as usize) {
-                for x in r.borrow().iter() {
-                    mark_value(x, work, seen_rc, d);
-                }
+        Value::Vector(r) if seen_rc.insert(std::rc::Rc::as_ptr(r) as *const () as usize) => {
+            for x in r.borrow().iter() {
+                mark_value(x, work, seen_rc, d);
             }
         }
+        Value::Vector(_) => {}
         Value::F32Vec(_) => {} // числа, ссылок нет
-        Value::Table(t) => {
-            if seen_rc.insert(std::rc::Rc::as_ptr(t) as *const () as usize) {
-                let vals: Vec<Value> = t.borrow().values().cloned().collect();
-                for x in &vals {
-                    mark_value(x, work, seen_rc, d);
-                }
+        Value::Table(t) if seen_rc.insert(std::rc::Rc::as_ptr(t) as *const () as usize) => {
+            let vals: Vec<Value> = t.borrow().values().cloned().collect();
+            for x in &vals {
+                mark_value(x, work, seen_rc, d);
             }
         }
+        Value::Table(_) => {}
         _ => {} // Nil/Bool/Int/Float/Sym/Str/Native/Ptr — листья
     }
 }
