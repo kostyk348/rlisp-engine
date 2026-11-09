@@ -243,11 +243,16 @@ The division of labor is the same as between a CPU and a GPU:
 | Native | Signature |
 |---|---|
 | `gpu3d-clear` | `(gpu3d-clear r g b)` |
-| `gpu3d-light` | `(gpu3d-light dx dy dz ambient [diffuse])` |
+| `gpu3d-light` | `(gpu3d-light dx dy dz ambient [diffuse [spec [shininess]]])` — optional specular (stage 7) |
 | `gpu3d-mesh` | `(gpu3d-mesh pos idx model mvp r g b)` |
 | `gpu3d-mesh-tex` | `(gpu3d-mesh-tex pos uv idx tex model mvp r g b)` |
 | `gpu3d-batch` | `(gpu3d-batch pos idx insts mvp)` — instances: 12 f32 |
 | `gpu3d-batch-tex` | `(gpu3d-batch-tex pos uv idx tex insts mvp)` |
+| `gpu3d-alpha-test` | `(gpu3d-alpha-test threshold)` — cutout, 0 = off (stage 7) |
+| `gpu3d-mat-tiling` | `(gpu3d-mat-tiling u v)` — UV repeat (stage 7) |
+| `gpu3d-fog` | `(gpu3d-fog r g b density)` — exp fog by depth (stage 7) |
+| `gpu3d-view` | `(gpu3d-view x y z)` — camera for specular (stage 7) |
+| `gpu3d-state` | `(gpu3d-state)` — pipeline state table (stage 7) |
 | `gpu3d-wire` | `(gpu3d-wire pos pairs model mvp r g b)` |
 | `gpu3d-stats` | `(gpu3d-stats)` → `(drawn culled)` |
 
@@ -261,6 +266,36 @@ One «ORBITAL» v0.3 frame ≈ **7–9 3D draw calls** (v0.2: 60–80), ~700–8
 triangles, 320×240 — **~100 fps** headless on the test VM (the frame uses the
 textured raster — costlier per pixel than flat). Batch measurement: 30 cubes ×
 60 repeats — **batch 13.0 ms vs 39.5 ms per-object (3.0×)**.
+
+## Materials, lighting, fog (stage 7)
+
+The software 3D "GPU" gained fixed-function-style materials — the render
+foundation for the upcoming showcase scene (materials/water/trees):
+
+- **alpha test (cutout)** — `(gpu3d-alpha-test 0.4)`: a texel below the
+  threshold is discarded **before the z-write**, so the scene is visible
+  through grass blades and fence holes; there is no 3D alpha blending
+  (honestly documented);
+- **Blinn-Phong specular** — `(gpu3d-light dx dy dz ambient diffuse 0.6 48)`
+  plus `(gpu3d-view x y z)`: per-pixel half-vector on a perspective-correct
+  world position; spec 0 keeps the plain Lambert path;
+- **tiling** — `(gpu3d-mat-tiling 16 16)`: fract-repeat (ground/walls
+  without stretching);
+- **fog** — `(gpu3d-fog 0.55 0.7 0.9 0.045)`:
+  `1 - exp(-density · depth)` on true depth (1/w), mixed after shading;
+- **materials in Lisp** (`assets/lisp/materials.lisp`, loaded by main3d):
+
+```lisp
+(defmaterial 'bushes ':texture tex ':alpha-test 0.4 ':spec 0.6 ':shininess 48)
+(draw-batch-tex mesh uv tex insts mvp 'bushes)  ; material as the last argument
+(material-reset!)                               ; neutral state
+```
+
+Visual proof — `bash scripts/materials_proof.sh` (4 variants of one scene,
+PIL pixel check): see `demo/stage7-materials.png`. Cost of the features,
+real `--bench` runs on the same scene (320×240): specular +46%, fog +15%,
+alpha test +4%, all together **+59% over the Lambert baseline** — see
+`docs/benchmark.md` for the environment and variance.
 
 ## Hot reload (spec §8)
 

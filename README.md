@@ -240,11 +240,16 @@ HAL-нативы 3D — «сырые команды GPU»:
 | Натив | Сигнатура |
 |---|---|
 | `gpu3d-clear` | `(gpu3d-clear r g b)` |
-| `gpu3d-light` | `(gpu3d-light dx dy dz ambient [diffuse])` |
+| `gpu3d-light` | `(gpu3d-light dx dy dz ambient [diffuse [spec [shininess]]])` — опц. блик (этап 7) |
 | `gpu3d-mesh` | `(gpu3d-mesh pos idx model mvp r g b)` |
 | `gpu3d-mesh-tex` | `(gpu3d-mesh-tex pos uv idx tex model mvp r g b)` |
 | `gpu3d-batch` | `(gpu3d-batch pos idx insts mvp)` — инстансы: 12 f32 |
 | `gpu3d-batch-tex` | `(gpu3d-batch-tex pos uv idx tex insts mvp)` |
+| `gpu3d-alpha-test` | `(gpu3d-alpha-test threshold)` — cutout, 0 = выкл (этап 7) |
+| `gpu3d-mat-tiling` | `(gpu3d-mat-tiling u v)` — repeat UV (этап 7) |
+| `gpu3d-fog` | `(gpu3d-fog r g b density)` — exp-туман по глубине (этап 7) |
+| `gpu3d-view` | `(gpu3d-view x y z)` — камера для блика (этап 7) |
+| `gpu3d-state` | `(gpu3d-state)` — таблица состояния конвейера (этап 7) |
 | `gpu3d-wire` | `(gpu3d-wire pos pairs model mvp r g b)` |
 | `gpu3d-stats` | `(gpu3d-stats)` → `(нарисовано отброшено)` |
 
@@ -258,6 +263,38 @@ deflate) + **читатель** (полный RFC 1951 inflate + фильтры 
 треугольников, 320×240 — **~100 fps** headless на тестовой VM (в кадре
 текстурный растр — дороже попиксельно, чем flat). Замер батча: 30 кубов × 60
 повторов — **батч 13.0 мс против 39.5 мс по-объектно (3.0×)**.
+
+## Материалы, свет, туман (этап 7)
+
+Программный 3D-«GPU» дополнен материалами в духе fixed-function —
+фундамент «крышесносной» демо-сцены (материалы/вода/деревья):
+
+- **alpha-test (cutout)** — `(gpu3d-alpha-test 0.4)`: тексель с alpha ниже
+  порога отбрасывается **до записи в z-буфер** — сквозь прорези травинок и
+  дырки заборов видна сцена, полупрозрачности в 3D нет (честно);
+- **блик Blinn-Phong** — `(gpu3d-light dx dy dz ambient diffuse 0.6 48)` +
+  `(gpu3d-view x y z)`: per-pixel half-vector на перспективно-корректной
+  мировой позиции; spec 0 — прежний Lambert;
+- **тайлинг** — `(gpu3d-mat-tiling 16 16)`: repeat текстуры через fract
+  (земля/стены без растяжения);
+- **туман** — `(gpu3d-fog 0.55 0.7 0.9 0.045)`: `1 - exp(-density·глубина)`
+  по истинной глубине 1/w, смешение после шейдинга;
+- **материалы на Lisp** (`assets/lisp/materials.lisp`, грузится main3d):
+
+```lisp
+(defmaterial 'кусты ':texture tex ':alpha-test 0.4 ':spec 0.6 ':shininess 48)
+(draw-batch-tex mesh uv tex insts mvp 'кусты)  ; материал последним аргументом
+(material-reset!)                              ; нейтральное состояние
+```
+
+Визуальное доказательство — `bash scripts/materials_proof.sh`
+(4 варианта одной сцены, PIL-сверка пикселей):
+
+![материалы](demo/stage7-materials.png)
+
+Стоимость материалов — реальные замеры `--bench` (та же сцена, 320×240):
+блик +46%, туман +15%, alpha-test +4%, всё вместе **+59% к базовому кадру
+Lambert** — окружение и разброс в `docs/benchmark.md`.
 
 ## Hot reload (ТЗ §8)
 
