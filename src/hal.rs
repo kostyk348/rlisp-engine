@@ -316,6 +316,72 @@ fn f2b(x: f64) -> u8 {
     (x * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
+// ——— этап 8 «модели из интернета»: сырые данные для glTF-пайплайна ———
+// Ноль зависимостей, как png.rs/json.rs: форматы «трубы», не игровая логика.
+// Lisp-загрузчик (assets/lisp/load-gltf.lisp) решает, что с ними делать.
+
+/// Base64-декодер (RFC 4648, стандартный алфавит). Принимает и data-URI
+/// («data:application/octet-stream;base64,XXXX») — всё до первой запятой
+/// отбрасывается; в чистом base64 запятой не бывает. Пробельные символы
+/// (переносы строк) пропускаются. Ошибка — на недопустимом символе,
+/// «данные после =» и неканоничном хвосте.
+pub fn base64_decode(src: &str) -> Result<Vec<u8>, String> {
+    fn val6(c: u8) -> Result<u32, String> {
+        match c {
+            b'A'..=b'Z' => Ok((c - b'A') as u32),
+            b'a'..=b'z' => Ok((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Ok((c - b'0' + 52) as u32),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(format!(
+                "base64: недопустимый символ {:?} (код {})",
+                c as char, c
+            )),
+        }
+    }
+    let mut s = src;
+    // data-URI: «data:image/png;base64,....» → payload после запятой
+    if s.trim_start().starts_with("data:") {
+        match s.find(',') {
+            Some(i) => s = &s[i + 1..],
+            None => return Err("base64: data-URI без запятой".into()),
+        }
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut nbits: u32 = 0;
+    let mut pad = 0usize;
+    for &b in s.as_bytes() {
+        match b {
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            b'=' => {
+                pad += 1;
+            }
+            _ => {
+                if pad > 0 {
+                    return Err("base64: данные после «=»".into());
+                }
+                acc = (acc << 6) | val6(b)?;
+                nbits += 6;
+                if nbits >= 8 {
+                    nbits -= 8;
+                    out.push(((acc >> nbits) & 0xFF) as u8);
+                    acc &= (1 << nbits) - 1;
+                }
+            }
+        }
+    }
+    // каноничность: хвост короче 8 бит обязан быть нулевыми битами паддинга;
+    // 6 бит остатка — «висячий» символ (всего один в последней группе)
+    if nbits >= 6 {
+        return Err("base64: длина не кратна группе 4 символов".into());
+    }
+    if nbits > 0 && acc != 0 {
+        return Err("base64: ненулевые биты после паддинга".into());
+    }
+    Ok(out)
+}
+
 fn str_val(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
@@ -577,6 +643,34 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         Ok(Value::List(names))
     });
 
+    // — этап 8: сырые данные для glTF-пайплайна (модели из интернета) —
+    // json-parse: строка → Lisp-таблицы/списки (через существующий json.rs)
+    def(env, "json-parse", move |args| {
+        need(args, 1)?;
+        let j = crate::json::parse(&str_val(&args[0]))?;
+        Ok(crate::json::json_to_value(&j))
+    });
+    // base64-decode: строка (или data-URI) → f32-вектор байтов 0..255
+    def(env, "base64-decode", move |args| {
+        need(args, 1)?;
+        let bytes = base64_decode(&str_val(&args[0]))?;
+        Ok(Value::F32Vec(Rc::new(RefCell::new(
+            bytes.into_iter().map(|b| b as f32).collect(),
+        ))))
+    });
+    // file-read-bytes: бинарный файл (например .bin glTF) → f32-вектор байтов.
+    // file-read (строка) не годится: std::fs::read_to_string требует валидный UTF-8.
+    let r = root.clone();
+    def(env, "file-read-bytes", move |args| {
+        need(args, 1)?;
+        let p = resolve_path(&str_val(&args[0]), &r);
+        let bytes =
+            std::fs::read(&p).map_err(|e| format!("file-read-bytes {}: {}", p.display(), e))?;
+        Ok(Value::F32Vec(Rc::new(RefCell::new(
+            bytes.into_iter().map(|b| b as f32).collect(),
+        ))))
+    });
+
     // — сырая память (по ТЗ §3.4): Lisp-мир живёт под GC, HAL-мир — вручную —
     let h = hal.clone();
     def(env, "mem-alloc", move |args| {
@@ -754,6 +848,42 @@ pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
                 hh
             ));
         }
+        let mut hal = h.borrow_mut();
+        hal.tex.push(Tex {
+            w,
+            h: hh,
+            px: px.clone(),
+        });
+        let id = hal.tex.len() as i64;
+        hal.tex_register(id, w, hh, &px);
+        Ok(Value::Int(id))
+    });
+    // texture-load-png: PNG-байты (f32-вектор 0..255, например из
+    // base64-decode) → декодер движка (png.rs) → текстура в реестре.
+    // Путь для встроенных в glTF текстур без временных файлов.
+    let h = hal.clone();
+    def(env, "texture-load-png", move |args| {
+        need(args, 1)?;
+        let bytes: Vec<u8> = match &args[0] {
+            Value::F32Vec(r) => {
+                let b = r.borrow();
+                let mut out = Vec::with_capacity(b.len());
+                for x in b.iter() {
+                    out.push(*x as u8);
+                }
+                out
+            }
+            Value::Vector(r) => {
+                let b = r.borrow();
+                let mut out = Vec::with_capacity(b.len());
+                for x in b.iter() {
+                    out.push(int_val(x)? as u8);
+                }
+                out
+            }
+            _ => return Err("texture-load-png: нужны PNG-байты (f32-вектор 0-255)".into()),
+        };
+        let (px, w, hh) = png::decode_png(&bytes)?;
         let mut hal = h.borrow_mut();
         hal.tex.push(Tex {
             w,
@@ -960,6 +1090,70 @@ mod tests {
         // отказ слишком большой поверхности — размер не меняется
         hal.resize_window(4096, 4096);
         assert_eq!((hal.w, hal.h), (64, 48));
+    }
+
+    // ——— этап 8: base64-декодер (RFC 4648 тест-векторы) и JSON → Lisp ———
+
+    #[test]
+    fn base64_rfc4648_векторы() {
+        let d = |s: &str| base64_decode(s).unwrap();
+        assert!(d("").is_empty());
+        assert_eq!(d("Zg=="), b"f");
+        assert_eq!(d("Zm8="), b"fo");
+        assert_eq!(d("Zm9v"), b"foo");
+        assert_eq!(d("Zm9vYg=="), b"foob");
+        assert_eq!(d("Zm9vYmU="), b"foobe");
+        assert_eq!(d("Zm9vYmVy"), b"foober");
+        // переносы строк внутри payload (письма и длинные data-URI)
+        assert_eq!(d("Zm9v\nYmVy"), b"foober");
+        // data-URI: всё до первой запятой отбрасывается
+        assert_eq!(d("data:application/octet-stream;base64,Zm9vYmU="), b"foobe");
+    }
+
+    #[test]
+    fn base64_ошибки_и_каноничность() {
+        // недопустимый символ
+        assert!(base64_decode("Zm*v").is_err());
+        // данные после паддинга
+        assert!(base64_decode("Zg==A").is_err());
+        // «висячий» символ — длина значимых символов не кратна группе
+        assert!(base64_decode("Z").is_err());
+        assert!(base64_decode("Zm8").is_ok()); // 3 символа — каноничный хвост
+                                               // ненулевые биты «после паддинга»
+        assert!(base64_decode("Zh==").is_err());
+        // data-URI без запятой
+        assert!(base64_decode("data:image/png;base64").is_err());
+    }
+
+    #[test]
+    fn json_парсер_даёт_таблицы_и_списки() {
+        use crate::json::{json_to_value, parse};
+        let v = json_to_value(&parse(r#"{"a":1,"b":[1,2.5,"x"],"c":{"d":true}}"#).unwrap());
+        match &v {
+            Value::Table(t) => {
+                assert_eq!(t.borrow().len(), 3);
+                // числа без дробной части → Int, с дробной → Float
+                assert!(matches!(t.borrow().get("a"), Some(Value::Int(1))));
+                match t.borrow().get("b").unwrap() {
+                    Value::List(l) => {
+                        assert_eq!(l.len(), 3);
+                        assert!(matches!(l[0], Value::Int(1)));
+                        assert!(matches!(l[1], Value::Float(x) if x == 2.5));
+                        assert!(matches!(l[2], Value::Str(ref s) if s == "x"));
+                    }
+                    other => panic!("b: не список, а {}", fmt_value(other)),
+                }
+                match t.borrow().get("c").unwrap() {
+                    Value::Table(inner) => {
+                        assert!(matches!(inner.borrow().get("d"), Some(Value::Bool(true))))
+                    }
+                    other => panic!("c: не таблица, а {}", fmt_value(other)),
+                }
+            }
+            other => panic!("корень: не таблица, а {}", fmt_value(other)),
+        }
+        // битый JSON — ошибка, не паника
+        assert!(crate::json::parse("{oops").is_err());
     }
 
     #[test]
