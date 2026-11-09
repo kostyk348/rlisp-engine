@@ -1,5 +1,9 @@
 # rlisp-engine
 
+[![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
+[![Pages](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml)
+[English](README.en.md) | Русский
+
 **Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL.**
 
 Прототип по [ТЗ v1.0](#): движок не содержит игровых систем — он содержит только
