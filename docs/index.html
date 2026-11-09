@@ -97,9 +97,9 @@
            data-en="T&amp;L, z-buffer, perspective-correct textures (own PNG decoder with full inflate), batch renderer: hundreds of objects in one draw call (~3× vs per-object calls).">
         T&amp;L, z-буфер, перспектива-корректные текстуры (свой PNG-декодер с полным inflate), батч-вершинник: сотни объектов одним draw call (~3× против по-объектных вызовов).</p></div>
       <div class="card"><h3>Редактор аля Unity (--serve)</h3>
-        <p class="t" data-ru="Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp."
-           data-en="Scene hierarchy, inspector, live view (PNG stream), REPL, asset editor with hot reload — all UI talks to the engine through Lisp.">
-        Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp.</p></div>
+        <p class="t" data-ru="Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp. Этап 6: гизмо X/Y/Z двигают сущности в живой игре, drag-n-drop префабов, «Сохранить сцену» → Lisp-файл."
+           data-en="Scene hierarchy, inspector, live view (PNG stream), REPL, asset editor with hot reload — all UI talks to the engine through Lisp. Stage 6: X/Y/Z gizmos move entities in the live game, prefab drag-n-drop, «Save scene» → Lisp file.">
+        Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp. Этап 6: гизмо X/Y/Z двигают сущности в живой игре, drag-n-drop префабов, «Сохранить сцену» → Lisp-файл.</p></div>
       <div class="card"><h3>MCP · AI Ready (--mcp)</h3>
         <p class="t" data-ru="Model Context Protocol (JSON-RPC 2.0, stdio): ИИ-агент видит сцену, спавнит сущности, исполняет Lisp, шагает симуляцию и получает скриншоты."
            data-en="Model Context Protocol (JSON-RPC 2.0, stdio): an AI agent sees the scene, spawns entities, runs Lisp, steps the simulation and receives screenshots.">
@@ -130,6 +130,30 @@ cargo build --release
 
 <section>
   <div class="wrap">
+    <h2 class="t" data-ru="Редактор (этап 6): скриншоты" data-en="Editor (stage 6): screenshots">Редактор (этап 6): скриншоты</h2>
+    <p class="t" style="color:var(--muted);font-size:.9rem;margin-bottom:14px"
+       data-ru="Реальные скриншоты живого редактора (headless-браузер поверх --serve, 3D-игра «ORBITAL» работает в фоне)."
+       data-en="Real screenshots of the live editor (headless browser over --serve, the 3D game «ORBITAL» running in the background).">
+       Реальные скриншоты живого редактора (headless-браузер поверх --serve, 3D-игра «ORBITAL» работает в фоне).</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
+      <div class="card" style="padding:10px"><img src="img/editor-full.png" alt="редактор: иерархия, вид с гизмо, инспектор" style="width:100%;border-radius:6px;border:1px solid var(--border)">
+        <p style="color:var(--muted);font-size:.82rem;padding:8px 6px 0" class="t"
+           data-ru="Полный вид: иерархия, префабы, живой кадр, инспектор выбранного врага"
+           data-en="Full view: hierarchy, prefabs, live frame, inspector of the selected enemy">Полный вид: иерархия, префабы, живой кадр, инспектор выбранного врага</p></div>
+      <div class="card" style="padding:10px"><img src="img/editor-gizmo.png" alt="гизмо X/Y/Z над сущностью" style="width:100%;border-radius:6px;border:1px solid var(--border)">
+        <p style="color:var(--muted);font-size:.82rem;padding:8px 6px 0" class="t"
+           data-ru="Гизмо X/Y/Z над выбранной сущностью: тяга оси двигает её в живой игре"
+           data-en="X/Y/Z gizmo over the selected entity: dragging an axis moves it in the live game">Гизмо X/Y/Z над выбранной сущностью: тяга оси двигает её в живой игре</p></div>
+      <div class="card" style="padding:10px"><img src="img/editor-save-scene.png" alt="сохранение сцены в Lisp-файл" style="width:100%;border-radius:6px;border:1px solid var(--border)">
+        <p style="color:var(--muted);font-size:.82rem;padding:8px 6px 0" class="t"
+           data-ru="«Сохранить сцену» → assets/lisp/scene_saved.lisp, тост подтверждает"
+           data-en="«Save scene» → assets/lisp/scene_saved.lisp, toast confirms">«Сохранить сцену» → assets/lisp/scene_saved.lisp, тост подтверждает</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
     <h2 class="t" data-ru="Роадмап" data-en="Roadmap">Роадмап</h2>
     <table>
       <thead><tr>
@@ -139,12 +163,12 @@ cargo build --release
         <th class="t" data-ru="Статус" data-en="Status">Статус</th>
       </tr></thead>
       <tbody>
-        <tr><td><b>1</b></td><td><span class="t" data-ru="wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование" data-en="wgpu behind the HAL facade, GPU resource manager, profiling">wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование</span><span class="crit">--wgpu · 100 reload без роста памяти</span></td><td class="st"><span class="pill wip t" data-ru="в работе" data-en="in progress">в работе</span></td></tr>
-        <tr><td><b>2</b></td><td><span class="t" data-ru="Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки" data-en="Full Lisp: Cons alongside Vec, tracing GC, threads">Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки</span><span class="crit">(cons 1 2) · 1000 циклов замыканий · MCP не крашит игру</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
-        <tr><td><b>3</b></td><td><span class="t" data-ru="JIT (copy-and-patch, Cranelift), SIMD в токенизаторе и GC, деоптимизация" data-en="JIT (copy-and-patch, Cranelift), SIMD in tokenizer and GC, deopt">JIT (copy-and-patch, Cranelift), SIMD в токенизаторе и GC, деоптимизация</span><span class="crit">eval ≥5× · парсер ≥3× · property-тесты ловят JIT-баги</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
-        <tr><td><b>4</b></td><td><span class="t" data-ru="Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер" data-en="Background MCP: MCP↔game channel, resources, screenshots + profiler">Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер</span><span class="crit">AI делает 100 шагов и итерирует в замкнутом цикле</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
-        <tr><td><b>5</b></td><td><span class="t" data-ru="Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md" data-en="Demos: 3D game on wgpu (5–10 min), 2D survival, gifs + benchmark.md">Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md</span><span class="crit t" data-ru="посторонний играет 5 минут без падений" data-en="a stranger plays 5 minutes without crashes">посторонний играет 5 минут без падений</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
-        <tr><td><b>6</b></td><td><span class="t" data-ru="Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp" data-en="Editor: gizmos, prefab drag-n-drop, saving scene as Lisp">Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp</span><span class="crit t" data-ru="сцену можно собрать мышкой и сохранить в .lisp" data-en="build a scene with the mouse and save it as .lisp">сцену можно собрать мышкой и сохранить в .lisp</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>1</b></td><td><span class="t" data-ru="wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование" data-en="wgpu behind the HAL facade, GPU resource manager, profiling">wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование</span><span class="crit">--wgpu · 100 reload без роста памяти</span></td><td class="st"><span class="pill wip t" data-ru="частично" data-en="partial">частично</span></td></tr>
+        <tr><td><b>2</b></td><td><span class="t" data-ru="Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки" data-en="Full Lisp: Cons alongside Vec, tracing GC, threads">Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки</span><span class="crit">(cons 1 2) · 1000 циклов замыканий · MCP не крашит игру</span></td><td class="st"><span class="pill done t" data-ru="реализовано" data-en="done">реализовано</span></td></tr>
+        <tr><td><b>3</b></td><td><span class="t" data-ru="JIT (copy-and-patch), SIMD-токенизатор, деоптимизация" data-en="JIT (copy-and-patch), SIMD tokenizer, deopt">JIT (copy-and-patch), SIMD-токенизатор, деоптимизация</span><span class="crit">eval ≥5× (49× ✓) · парсер ≥3× (1.07× ✗) · property-тесты ✓</span></td><td class="st"><span class="pill wip t" data-ru="частично" data-en="partial">частично</span></td></tr>
+        <tr><td><b>4</b></td><td><span class="t" data-ru="Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер" data-en="Background MCP: MCP↔game channel, resources, screenshots + profiler">Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер</span><span class="crit t" data-ru="AI делает 100 шагов и итерирует в замкнутом цикле" data-en="AI makes 100 steps and iterates in a closed loop">AI делает 100 шагов и итерирует в замкнутом цикле</span></td><td class="st"><span class="pill wip t" data-ru="частично" data-en="partial">частично</span></td></tr>
+        <tr><td><b>5</b></td><td><span class="t" data-ru="Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md" data-en="Demos: 3D game on wgpu (5–10 min), 2D survival, gifs + benchmark.md">Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md</span><span class="crit t" data-ru="посторонний играет 5 минут без падений" data-en="a stranger plays 5 minutes without crashes">посторонний играет 5 минут без падений</span></td><td class="st"><span class="pill wip t" data-ru="частично" data-en="partial">частично</span></td></tr>
+        <tr><td><b>6</b></td><td><span class="t" data-ru="Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp" data-en="Editor: gizmos, prefab drag-n-drop, saving scene as Lisp">Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp</span><span class="crit t" data-ru="сцену можно собрать мышкой и сохранить в .lisp" data-en="build a scene with the mouse and save it as .lisp">сцену можно собрать мышкой и сохранить в .lisp</span></td><td class="st"><span class="pill done t" data-ru="реализовано" data-en="done">реализовано</span></td></tr>
         <tr><td><b>7</b></td><td><span class="t" data-ru="wasm-таргет, мобильный таргет, fallback SIMD" data-en="wasm target, mobile target, scalar SIMD fallback">wasm-таргет, мобильный таргет, fallback SIMD</span><span class="crit t" data-ru="одна .lisp-сцена работает на десктопе и в браузере" data-en="one .lisp scene runs on desktop and in the browser">одна .lisp-сцена работает на десктопе и в браузере</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
       </tbody>
     </table>

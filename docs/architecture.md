@@ -36,7 +36,7 @@
 | `src/gpu.rs` | 1 | **бэкенды рендера (этап 1)**: `enum Backend` + трейт `GpuBackend`, менеджер ресурсов `GpuResources`, wgpu-рендерер (фича `wgpu`) |
 | `src/render3d.rs` | 1 | 3D fixed-function: T&L, near-clip (+UV), куллинг, z-буфер, батч-вершинник |
 | `src/png.rs` | 1 | PNG-кодек без зависимостей (писатель + полный inflate) |
-| `src/editor.rs` | 1 | HTTP-сервер редактора (std::net), мост кадр/сцена/команды |
+| `src/editor.rs` | 1 | HTTP-сервер редактора (std::net), мост кадр/сцена/команды; этап 6: камера/префабы в `/api/state`, `/api/save-scene` |
 | `src/mcp.rs`, `src/json.rs` | 1 | MCP (JSON-RPC 2.0, stdio, **reader/writer-потоки + mpsc**, этап 2), JSON |
 | `build.rs` | — | cfg `has_avx512` по версии rustc (stdarch AVX-512 стабилен с 1.89) |
 
@@ -158,6 +158,40 @@ MCP (JSON-RPC 2.0, stdio) обслуживают фоновые потоки; и
   состояниях нет — гонок по построению. `--mcp` поведение совместимо.
 - Веб-редактор (`--serve`) устроен так же с v0.3: HTTP-нити отвечают из
   моста, Lisp исполняет только игровая нить (командная очередь).
+
+## Мост редактора (этап 6)
+
+Схема публикации/команд дополнена этапом 6 — семантика сцены по-прежнему
+целиком на Lisp:
+
+```
+ игровая нить (каждый кадр)                    HTTP-нити (ответы браузеру)
+ ──────────────────────────                    ───────────────────────────
+ publish_scene:    (editor-scene)  → Bridge.scene    /api/state  → кадр/fps/сцена/лог +
+ publish_extras:   (editor-camera) → Bridge.camera             camera+prefabs (этап 6)
+                   (prefab-list)   → Bridge.prefabs  /frame.png → PNG кадра
+ drain_editor_cmds: очередь cmds → eval на игровой нити  /api/eval /api/save /api/key
+                    (в т.ч. (editor-save-scene …)        /api/ctl  pause|resume|step|reload
+                     из /api/save-scene, этап 6)         /api/save-scene → ставит команду
+```
+
+- **камера для гизмо**: игра объявляет хук `(editor-camera)` (game3d.lisp
+  возвращает eye/target/fov/w/h — те же значения, что в `draw-scene`);
+  нет хука — в Bridge остаётся `null`, редактор прячет гизмо. Страница
+  редактора восстанавливает проекцию `mat-perspective`/`mat-lookat` на JS
+  (те же формулы, что в `render3d.lisp`) и рисует X/Y/Z-оверлей над
+  выбранной сущностью; тяга оси пересчитывает экранный сдвиг в мировые
+  единицы и шлёт `(table-set! REF 'x/z v)` через `/api/eval`;
+- **префабы**: хук `(prefab-list)` → JSON → панель редактора; drop на вид
+  считается обратной развёрткой пикселя в луч (та же камера) и спавнит
+  `(mcp-spawn-at 'kind x z)`;
+- **сохранение сцены**: `/api/save-scene` не трогает состояние сам — ставит
+  в командную очередь `(editor-save-scene "scene_saved.lisp")`; игровая
+  нить сериализует `(scene-entities)` в Lisp-формы восстановления и пишет
+  нативом `file-write`. Имя файла санитизируется (только basename внутри
+  assets/lisp). Восстановление — `(load "scene_saved.lisp")` в живой игре;
+- страница редактора (`assets/editor/index.html`) по-прежнему зашита в
+  бинарь (`include_str!`) — изменение требует пересборки.
 
 ## Zero-dependency по умолчанию
 

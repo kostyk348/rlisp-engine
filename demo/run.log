@@ -1,5 +1,5 @@
 rlisp-engine: HAL → интерпретатор → системные DSL → игра; всё готово, update/draw на Lisp
-rlisp-engine v0.1 | SIMD: AVX-512 | экран 320x240 | lisp-файлов: 8 | скрипт: assets/lisp/main.lisp
+rlisp-engine v0.3 | SIMD: AVX2 | рендер: программный растр | экран 320x240 | lisp-файлов: 10 | скрипт: assets/lisp/main.lisp
 rlisp-engine: HAL → интерпретатор → системные DSL → игра; всё готово, update/draw на Lisp
-[hot-reload] кадр 269: /home/z/my-project/download/rlisp-engine/assets/lisp/game.lisp перезагружен; окружение пересобрано, 11 persistent-значений восстановлено
-итог: кадров 540 за 18.0с (29.9 fps) | hot-reload: 1 | score: 130
+[hot-reload] кадр 269: /home/z/my-project/work/portfolio/rlisp-engine/assets/lisp/game.lisp перезагружен; окружение пересобрано, 11 persistent-значений восстановлено
+итог: кадров 540 за 18.0с (29.9 fps) | hot-reload: 1 | score: 110

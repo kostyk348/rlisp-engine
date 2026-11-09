@@ -25,6 +25,12 @@ editor and MCP are Lisp libraries on top of a thin Rust layer.
   an AI agent sees the scene, spawns entities, edits properties, runs Lisp,
   steps the simulation and **receives engine screenshots**.
 
+**v0.4 (roadmap stages 3/5/6):** copy-and-patch JIT for numeric kernels (49×,
+zero-dep) + SIMD tokenizer; fresh demo gifs and benchmark.md; the editor became
+a real editor: **X/Y/Z gizmos move entities in the live game, prefab
+drag-n-drop, "Save scene" into a Lisp file** (the editor page was rebuilt —
+on master it had been broken since the first commit).
+
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  LAYER 4: Game DSLs (genre-level)                                    │
@@ -124,11 +130,12 @@ textured draw call instead of hundreds of lines), enemies/player are a "panel"
 texture with tint; enemies/bullets/pylons are drawn in **batches** (one draw
 call per group). At t=9s `game3d.lisp` is edited on disk: enemies turn orange
 and twice as fast — without a restart (`demo/run3d.log`, "12 persistent values
-restored").
+restored"). The gifs were re-captured on the current master (stage 5): 90
+frames / 18 s, 540 frames of simulation without a single crash.
 
 ![orbital](demo/orbital.gif)
 
-2D «Survival» (v0.1): ![survival](demo/survival.gif)
+2D «Survival» (v0.1, fresh stage-5 capture): ![survival](demo/survival.gif)
 
 All game code is Lisp (`assets/lisp/game.lisp`, `assets/lisp/game3d.lisp`):
 player, waves, aim assist, collisions, score, GAME OVER + restart on `R`.
@@ -140,27 +147,57 @@ in the binary (`assets/editor/index.html`). The game thread publishes the
 frame/scene/log into a bridge (`src/editor.rs`); the browser polls `/api/state`
 and `/frame.png`.
 
+![editor](demo/editor-full.png)
+
 | Panel | What it does |
 |---|---|
-| **Hierarchy** | live list of scene entities — player, enemies, bullets, effects; click to select |
+| **Hierarchy** | live list of scene entities — player, enemies, pylons, bullets, effects; click to select (clicking the view works too) |
+| **Prefabs (stage 6)** | chips from the game hook `(prefab-list)` (grunt / brute / pylon); **drag-n-drop onto the view** → pixel ray-unproject → `(mcp-spawn-at 'kind x z)` — spawns into the live game |
 | **Inspector** | properties of the selected entity; "Apply" runs `(table-set! REF 'prop value)` in the live world |
-| **View** | engine frame as a PNG stream (~5 Hz refresh), PAUSE badge |
-| **Console + REPL** | any Lisp in the live environment: `(spawn-enemy 'brute)`, `(* 6 7)` → answer in the console |
+| **View** | engine frame as a PNG stream (~5 Hz), **X/Y/Z gizmo (stage 6)**: dragging an axis moves the entity in the live game; 0.5 grid-snap toggle, PAUSE badge |
+| **Console + REPL** | any Lisp in the live environment: `(mcp-spawn-at 'brute 10 10)`, `(load "scene_saved.lisp")` → answer in the console |
 | **Code** | assets (all .lisp files), edit, Ctrl+S → `/api/save` → **the engine hot-reloads itself**, persistent state is carried over |
-| **Toolbar** | pause/step frame/reload Lisp, frame, fps, triangles |
+| **Toolbar** | pause/step frame/reload Lisp, frame, fps, triangles, **«Save scene» (stage 6)**, hotkeys: `G` — gizmo, `Del` — delete selection |
+
+### Saving the scene as Lisp (stage 6)
+
+The "Save scene" button → `POST /api/save-scene` → the game thread calls
+`(editor-save-scene "scene_saved.lisp")` (editor.lisp) and serializes the
+live scene into restore forms:
+
+```lisp
+;; scene_saved.lisp — scene saved by the rlisp-engine editor.
+(begin (table-set! *player* 'x 0.0) (table-set! *player* 'z 0.0))
+(mcp-spawn-at 'grunt -18 -14)
+(mcp-spawn-at 'brute -25 -8)
+(mcp-spawn-at 'pylon 18 -20)
+```
+
+To restore in the game: `(load "scene_saved.lisp")` via the REPL. The
+round-trip is covered by a unit test: 3 entities → file → reader → load →
+same entities and positions.
+
+![gizmo](demo/editor-gizmo.png)
+![save scene](demo/editor-save-scene.png)
 
 The API (the same one any script/agent uses):
 
 ```
 GET  /                 editor page             GET  /frame.png      current frame
 GET  /api/state        scene+log+results       GET  /api/file?path= asset text
+                       + game camera & prefabs
+                       (editor-camera /
+                       prefab-list hooks, stage 6)
 POST /api/eval {code}  evaluate Lisp           POST /api/save       save an asset
 POST /api/key {key,down} key into the game     POST /api/ctl {cmd}  pause|resume|step|reload
+POST /api/save-scene {path} serialize the scene into a Lisp file (stage 6)
 ```
 
 The hierarchy's scene is Lisp: `(editor-scene)` (editor.lisp) calls the game
 hook `(scene-entities)` (game3d.lisp) — tables become JSON natively
-(`src/json.rs`, HAL layer).
+(`src/json.rs`, HAL layer). The gizmo camera and prefabs work the same way:
+hooks `(editor-camera)` and `(prefab-list)`; no hook — the editor honestly
+hides the tool.
 
 ## AI Ready: MCP (--mcp)
 
@@ -256,6 +293,9 @@ bodies via `vec-add` — ~1100× vs element-wise Lisp (hot data are dense
 | **Batch renderer (v0.3)** | ✅ | `gpu3d-batch[-tex]`, 12 f32/instance, ~3× |
 | **Editor (v0.3)** | ✅ | `--serve`: hierarchy, inspector, REPL, assets, view |
 | **AI Ready/MCP (v0.3)** | ✅ | `--mcp`: 10 tools, screenshots, stdio JSON-RPC |
+| **JIT + SIMD tokenizer (stage 3)** | ◐ | JIT numeric kernels 49× (zero-dep copy-and-patch), deopt; parser ≥3× not reached (1.07×) — `docs/benchmark.md` |
+| **Demos (stage 5)** | ◐ | fresh 2D/3D gifs, 540 frames without crashes, benchmark.md; "3D on wgpu" — waits for GPU hardware |
+| **Editor stage 6** | ◐ | X/Y/Z gizmo in the live game, prefab drag-n-drop, "Save scene" → .lisp; caveats — `docs/roadmap.md` |
 
 `*` — deviation from the spec (deliberate for a prototype): instead of `wgpu`
 — a software raster with the same API profile. The wgpu backend plugs in behind
@@ -270,8 +310,13 @@ the same HAL facade; the Lisp layer does not change.
   filtering); clipping is the near plane only (do not put the camera flush
   against geometry); transparency only in 2D sprites (alpha blit), 3D has no
   transparency sorting.
-- **Editor**: single page, no drag-n-drop or gizmo manipulators; the view is
-  PNG polling (~5 Hz), not a video stream; the server listens on 127.0.0.1 only.
+- **Editor**: single page; the gizmo is a 2D overlay over the PNG stream
+  (~4–5 Hz, the camera keeps moving — the overlay lags slightly, the drag
+  compensates with a start anchor); the Y axis moves the `y` property only if
+  the entity has one; drag-n-drop and click-select work in a browser; scene
+  saving is a spawn-script (restoring adds entities to the current ones, no
+  dedup), loading is manual via the REPL; the view is PNG polling, not a
+  video stream; the server listens on 127.0.0.1 only.
 - **MCP**: tools only, resources/prompts are not implemented; the protocol runs
   in background threads (stage 2), the interpreter is the single-threaded owner
   of the state; the simulation advances when the agent calls `step` (which is
@@ -300,7 +345,8 @@ src/
   gpu.rs       stage 1: render backends (software | wgpu), GPU resource manager
   render3d.rs  "GPU": T&L, near-clip (+UV), culling, z-buffer, texturing,
                batch renderer, lines
-  editor.rs    v0.3: editor HTTP server (std::net), frame/scene/command bridge
+  editor.rs    v0.3: editor HTTP server (std::net), frame/scene/command bridge;
+               stage 6: camera/prefabs in /api/state, /api/save-scene
   mcp.rs       v0.3: MCP server (JSON-RPC 2.0, stdio), 10 tools;
                stage 2: reader/writer threads + mpsc, interp lives on the game thread
   json.rs      v0.3: JSON parser/serializer (+ Value↔Json for the scene)
@@ -323,17 +369,21 @@ assets/lisp/
   main3d.lisp    3D stack bootstrap
 assets/editor/index.html   editor page (embedded in the binary)
 scripts/       smoke.sh, demo3d.sh, demo_hot_reload.sh, demo_editor.sh, …
-demo/          orbital.gif, survival.gif, filmstrip*.png, *.log
+demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
 ```
 
 ## What's next
 
 1. ~~wgpu backend behind the current HAL facade (Lisp unchanged)~~ — done in
    stage 1 (2D raster; 3D batches — stage 5, see `docs/roadmap.md`).
-2. Editor: gizmo manipulators in the view (axis drag), prefab drag-n-drop,
-   saving the scene to a Lisp file.
+2. ~~Editor: gizmo manipulators in the view (axis drag), prefab drag-n-drop,
+   saving the scene to a Lisp file~~ — done in stage 6 (see "Unity-style
+   editor" and `docs/roadmap.md`).
 3. 3D: mip filtering, sorted transparency, X/Y frustum clipping, skeletal
    animation on top of `mat4-batch`.
 4. MCP: resources (the engine log as a stream), scene events (on-kill etc.).
-5. SIMD tokenizer for the parser (GC scanning was done in stage 2).
-6. JIT for eval (spec §10.1).
+5. SIMD tokenizer for the parser — built in stage 3, but the ≥3× criterion was
+   not reached (1.07×, analysis in `docs/benchmark.md`); the plan: symbol
+   interning, pshufb byte classification.
+6. JIT for eval (spec §10.1) — numeric kernels done in stage 3 (49×);
+   extending coverage is the next step.

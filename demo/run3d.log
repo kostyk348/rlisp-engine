@@ -1,5 +1,6 @@
 rlisp-engine 3D: HAL(+GPU) → интерпретатор → render3d DSL → ORBITAL; update/draw на Lisp
-rlisp-engine v0.3 | SIMD: AVX-512 | экран 320x240 | lisp-файлов: 9 | скрипт: assets/lisp/main3d.lisp
+rlisp-engine v0.3 | SIMD: AVX2 | рендер: программный растр | экран 320x240 | lisp-файлов: 9 | скрипт: assets/lisp/main3d.lisp
+[hot-reload] GPU-ресурсы: освобождено текстур: 1
 rlisp-engine 3D: HAL(+GPU) → интерпретатор → render3d DSL → ORBITAL; update/draw на Lisp
-[hot-reload] кадр 255: /home/z/my-project/download/rlisp-engine/assets/lisp/game3d.lisp перезагружен; окружение пересобрано, 12 persistent-значений восстановлено
-итог: кадров 540 за 18.9с (28.5 fps) | hot-reload: 1 | score: 130
+[hot-reload] кадр 248: /home/z/my-project/work/portfolio/rlisp-engine/assets/lisp/game3d.lisp перезагружен; окружение пересобрано, 13 persistent-значений восстановлено
+итог: кадров 540 за 19.5с (27.7 fps) | hot-reload: 1 | score: 150
