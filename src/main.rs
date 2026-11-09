@@ -362,7 +362,7 @@ fn run_bench_parse() -> Result<(), String> {
     // отдельный замер ТОЛЬКО лексического скана (без построения Value) —
     // показывает вклад самой векторизации, честно помечен
     let iters = 200usize;
-    let bs = total_bytes as f64 * iters as f64;
+    let _bs = total_bytes as f64 * iters as f64;
     let mbs = |d: std::time::Duration| bs / d.as_secs_f64() / 1e6;
     let mut lex_scalar = 0usize;
     let mut lex_simd = 0usize;
@@ -429,7 +429,7 @@ fn run_bench_parse() -> Result<(), String> {
     let dt_simd = t1.elapsed();
 
     assert_eq!(forms_scalar, forms_simd);
-    let bs = total_bytes as f64 * iters as f64;
+    let _bs = total_bytes as f64 * iters as f64;
     let speedup = dt_scalar.as_secs_f64() / dt_simd.as_secs_f64();
     println!(
         "[парсер] scalar (старый reader):  {:>8.1} мс за {} прогонов корпуса — {:.0} МБ/с",

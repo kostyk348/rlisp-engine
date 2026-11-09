@@ -1,3 +1,5 @@
+#![allow(clippy::map_identity)]
+
 // src/simd.rs — SAL (SIMD Abstraction Layer) по ТЗ §4.3–4.5.
 // Портативный API: vec-add / vec-dot / mat4-mul … с runtime-диспетчеризацией:
 //   AVX-512 → AVX2 → SSE2 → скалярный fallback.
