@@ -1,3 +1,5 @@
+#![allow(clippy::needless_return, clippy::only_used_in_recursion)]
+
 // src/interp.rs — Уровень 2: Lisp-интерпретатор (+ макросы, TCO, замыкания).
 // Минимальный, но достаточный диалект по ТЗ §4.2:
 //   числа/строки/символы/булевы, списки/векторы/хеш-таблицы, define/lambda/if/let/begin,

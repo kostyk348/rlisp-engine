@@ -871,7 +871,12 @@ pub fn next_hit_scalar(bytes: &[u8], mut pos: usize) -> Option<(usize, Hit)> {
     while pos < bytes.len() {
         let b = bytes[pos];
         if b < 0x80 {
-            if matches!(b, 0x09..=0x0D | 0x20) || matches!(b, b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"') {
+            if matches!(b, 0x09..=0x0D | 0x20)
+                || matches!(
+                    b,
+                    b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"'
+                )
+            {
                 return Some((pos, hit_of(b)));
             }
             pos += 1;
@@ -907,7 +912,9 @@ pub fn find_byte(bytes: &[u8], pos: usize, target: u8) -> Option<usize> {
 }
 
 #[cfg(target_arch = "x86_64")]
-static WS_SET: [u8; 16] = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+static WS_SET: [u8; 16] = [
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
 #[cfg(target_arch = "x86_64")]
 static DL_SET: [u8; 16] = [
     b'(', b')', b'[', b']', b'\'', b'`', b',', b';', b'"', 0, 0, 0, 0, 0, 0, 0,

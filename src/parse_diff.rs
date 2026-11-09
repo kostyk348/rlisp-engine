@@ -1,3 +1,9 @@
+#![allow(
+    clippy::module_inception,
+    clippy::redundant_closure,
+    clippy::map_identity
+)]
+
 // scripts/parse_diff.rs — сверка старого и нового reader'а на произвольном вводе.
 // Запуск: cargo run --features jit -- --bench-parse-test  (или как test)
 #[cfg(test)]
@@ -12,18 +18,26 @@ mod parse_diff {
                 let fx: Vec<String> = x.iter().map(|v| crate::interp::fmt_value(v)).collect();
                 let fy: Vec<String> = y.iter().map(|v| crate::interp::fmt_value(v)).collect();
                 if fx != fy {
-                    panic!("РАСХОЖДЕНИЕ AST:\n  вход: {:?}\n  scalar: {:?}\n  simd:   {:?}", src, fx, fy);
+                    panic!(
+                        "РАСХОЖДЕНИЕ AST:\n  вход: {:?}\n  scalar: {:?}\n  simd:   {:?}",
+                        src, fx, fy
+                    );
                 }
             }
             (Err(e1), Err(e2)) => {
                 if e1 != e2 {
-                    panic!("РАСХОЖДЕНИЕ ошибок:\n  вход: {:?}\n  scalar: {}\n  simd:   {}", src, e1, e2);
+                    panic!(
+                        "РАСХОЖДЕНИЕ ошибок:\n  вход: {:?}\n  scalar: {}\n  simd:   {}",
+                        src, e1, e2
+                    );
                 }
             }
-                        (r1, r2) => panic!(
-                            "РАСХОЖДЕНИЕ Ok/Err:\n  вход: {:?}\n  scalar ok: {}\n  simd ok:   {}",
-                            src, r1.is_ok(), r2.is_ok()
-                        ),
+            (r1, r2) => panic!(
+                "РАСХОЖДЕНИЕ Ok/Err:\n  вход: {:?}\n  scalar ok: {}\n  simd ok:   {}",
+                src,
+                r1.is_ok(),
+                r2.is_ok()
+            ),
         }
     }
 
@@ -98,7 +112,13 @@ mod parse_diff {
                                 let fx = crate::interp::fmt_value(vx);
                                 let fy = crate::interp::fmt_value(vy);
                                 if fx != fy {
-                                    panic!("{}: форма {}:\n  scalar: {}\n  simd:   {}", p.display(), i + 1, fx, fy);
+                                    panic!(
+                                        "{}: форма {}:\n  scalar: {}\n  simd:   {}",
+                                        p.display(),
+                                        i + 1,
+                                        fx,
+                                        fy
+                                    );
                                 }
                             }
                         }
@@ -107,7 +127,12 @@ mod parse_diff {
                                 panic!("{}: ошибка scalar={} simd={}", p.display(), e1, e2);
                             }
                         }
-                        (r1, r2) => panic!("{}: Ok/Err расходится: scalar_ok={} simd_ok={}", p.display(), r1.is_ok(), r2.is_ok()),
+                        (r1, r2) => panic!(
+                            "{}: Ok/Err расходится: scalar_ok={} simd_ok={}",
+                            p.display(),
+                            r1.is_ok(),
+                            r2.is_ok()
+                        ),
                     }
                     count += 1;
                 }
