@@ -588,7 +588,7 @@ pub fn vdot(a: &[f32], b: &[f32]) -> f32 {
     {
         match active_level() {
             #[cfg(has_avx512)]
-            SimdLevel::Avx512 => return unsafe { avx512::dot(a, b) },
+            SimdLevel::Avx512 => unsafe { avx512::dot(a, b) },
             #[cfg(not(has_avx512))]
             SimdLevel::Avx512 => unsafe { avx::dot(a, b) },
             SimdLevel::Avx2 => unsafe { avx::dot(a, b) },
