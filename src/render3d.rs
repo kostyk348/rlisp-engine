@@ -23,7 +23,7 @@
 // клиппинга (атрибуты режутся в однородных координатах вместе с вершиной).
 
 use crate::hal::Hal;
-use crate::interp::{env_define, need_args, num_val, Env, Value};
+use crate::interp::{env_define, need_args, num_val, Gc, Value};
 use crate::simd::to_f32s;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -774,8 +774,8 @@ fn check_tex_uv(uv: Option<&[f32]>, n: usize) -> Result<(), String> {
     Ok(())
 }
 
-pub fn register_render3d(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>) {
-    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: &Rc<Env>, name: &str, f: F) {
+pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
+    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: Gc, name: &str, f: F) {
         env_define(env, name, Value::Native(Rc::new(f), name.to_string()));
     }
     use need_args as need;

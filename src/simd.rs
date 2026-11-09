@@ -9,7 +9,7 @@
 // Скалярный fallback компилируется с автой-векторизацией LLVM (SSE2 baseline) —
 // это и есть честный «без нашего SIMD» бенчмарк.
 
-use crate::interp::{env_define, fmt_value, need_args, num_val, Env, Value};
+use crate::interp::{env_define, fmt_value, need_args, num_val, Gc, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -709,7 +709,7 @@ fn ret_f32(v: Vec<f32>) -> Value {
     Value::F32Vec(Rc::new(RefCell::new(v)))
 }
 
-fn binop(env: &Rc<Env>, name: &str, f: for<'a> fn(&'a [f32], &'a [f32], &'a mut [f32])) {
+fn binop(env: Gc, name: &str, f: for<'a> fn(&'a [f32], &'a [f32], &'a mut [f32])) {
     let name_s: String = name.to_string();
     env_define(
         env,
@@ -736,14 +736,14 @@ fn binop(env: &Rc<Env>, name: &str, f: for<'a> fn(&'a [f32], &'a [f32], &'a mut 
     );
 }
 
-pub fn register_simd(env: &Rc<Env>) {
+pub fn register_simd(env: Gc) {
     binop(env, "vec-add", vadd);
     binop(env, "vec-sub", vsub);
     binop(env, "vec-mul", vmul);
     binop(env, "vec-min", vmin);
     binop(env, "vec-max", vmax);
 
-    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: &Rc<Env>, name: &str, f: F) {
+    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: Gc, name: &str, f: F) {
         env_define(env, name, Value::Native(Rc::new(f), name.to_string()));
     }
     use need_args as need;

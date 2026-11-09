@@ -17,7 +17,7 @@
 //   POST /api/key  {key,down}     — событие клавиатуры в игру
 //   POST /api/ctl  {cmd}          — pause | resume | step | reload
 
-use crate::interp::{env_get, fmt_value, parse_program, CoreCtx, Env, GlobalCell, Value};
+use crate::interp::{env_get, fmt_value, parse_program, CoreCtx, Gc, GlobalCell, Value};
 use crate::json::Json;
 use crate::png;
 use std::cell::RefCell;
@@ -416,7 +416,7 @@ fn bridge() -> Option<&'static Arc<Bridge>> {
 }
 
 /// Натив (editor-log msg) — Lisp пишет в консоль редактора (или в stderr).
-pub fn register_editor(env: &Rc<Env>) {
+pub fn register_editor(env: Gc) {
     crate::interp::env_define(
         env,
         "editor-log",
@@ -438,18 +438,25 @@ pub fn register_editor(env: &Rc<Env>) {
 /// Исполнить Lisp-строку в живом окружении (команды редактора/MCP).
 pub fn eval_string(code: &str, cell: &GlobalCell) -> Result<Value, String> {
     let prog = parse_program(code)?;
-    let g = cell.borrow().clone();
+    // формы (могут нести Cons-литералы) и последний результат переживают
+    // сборки на границах форм — pin-корни
+    let _pin = crate::gc::pin(prog.clone());
+    let g = *cell.borrow();
     let mut last = Value::Nil;
+    let pin = crate::gc::pin(vec![last.clone()]);
     for e in prog {
-        last = crate::interp::eval(&e, &g, 0)?;
+        last = crate::interp::eval(&e, g, 0)?;
+        crate::gc::pin_replace(&pin, vec![last.clone()]);
+        crate::gc::maybe_collect(&[g], &[]);
     }
+    drop(pin);
     Ok(last)
 }
 
 /// Публикация сцены: (editor-scene) из Lisp → JSON-строка в Bridge.
 pub fn publish_scene(cell: &GlobalCell, bridge: &Arc<Bridge>) {
-    let g = cell.borrow().clone();
-    if let Some(f) = env_get(&g, "editor-scene") {
+    let g = *cell.borrow();
+    if let Some(f) = env_get(g, "editor-scene") {
         match crate::interp::apply(&f, &[], 0) {
             Ok(v) => {
                 *bridge.scene.lock().unwrap() = crate::json::value_to_json(&v).dump();
@@ -514,15 +521,17 @@ pub struct EngineHandle {
 
 /// Шаг кадра для MCP-режима (update → draw → frame-end).
 pub fn step_frame(h: &EngineHandle, dt: f64) -> Result<(), String> {
-    let g = h.cell.borrow().clone();
-    if let Some(f) = env_get(&g, "update") {
+    let g = *h.cell.borrow();
+    if let Some(f) = env_get(g, "update") {
         crate::interp::apply(&f, &[Value::Float(dt)], 0)?;
     }
-    if let Some(f) = env_get(&g, "draw") {
+    if let Some(f) = env_get(g, "draw") {
         crate::interp::apply(&f, &[], 0)?;
     }
-    if let Some(f) = env_get(&g, "frame-end") {
+    if let Some(f) = env_get(g, "frame-end") {
         let _ = crate::interp::apply(&f, &[], 0);
     }
+    // Этап 2: граница форм MCP-цикла — авто-сборка GC
+    crate::gc::maybe_collect(&[g], &[]);
     Ok(())
 }

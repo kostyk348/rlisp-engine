@@ -316,6 +316,16 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Str(s) => Json::Str(s.clone()),
         Value::Ptr(id) => Json::int(*id as i64),
         Value::List(items) => Json::Arr(items.iter().map(value_to_json).collect()),
+        Value::Cons(g) => {
+            // Этап 2: Cons-цепочка → JSON-массив; точечный/циклический хвост —
+            // честная строка через fmt_value
+            let (items, tail, cyclic) = crate::interp::chain_parts(*g);
+            if !cyclic && tail.is_none() {
+                Json::Arr(items.iter().map(value_to_json).collect())
+            } else {
+                Json::Str(crate::interp::fmt_value(v))
+            }
+        }
         Value::Vector(r) => Json::Arr(r.borrow().iter().map(value_to_json).collect()),
         Value::F32Vec(r) => Json::Arr(r.borrow().iter().map(|x| Json::num(*x as f64)).collect()),
         Value::Table(t) => {

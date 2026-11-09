@@ -11,7 +11,7 @@
 
 use crate::gpu::{Backend, GpuResources};
 use crate::interp::{
-    env_define, fmt_value, int_val, load_file, need_args, num_val, resolve_path, Env, Value,
+    env_define, fmt_value, int_val, load_file, need_args, num_val, resolve_path, Gc, Value,
 };
 use crate::png;
 use std::cell::RefCell;
@@ -405,8 +405,8 @@ fn mem_block(hal: &Hal, v: &Value) -> Result<Rc<RefCell<Vec<u8>>>, String> {
     }
 }
 
-pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
-    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: &Rc<Env>, name: &str, f: F) {
+pub fn register_hal(env: Gc, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
+    fn def<F: Fn(&[Value]) -> Result<Value, String> + 'static>(env: Gc, name: &str, f: F) {
         env_define(env, name, Value::Native(Rc::new(f), name.to_string()));
     }
     use need_args as need;

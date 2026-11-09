@@ -102,8 +102,8 @@ pub struct McpState {
 }
 
 fn fmt_get(cell: &GlobalCell, name: &str) -> String {
-    let g = cell.borrow().clone();
-    env_get(&g, name)
+    let g = *cell.borrow();
+    env_get(g, name)
         .map(|v| fmt_value(&v))
         .unwrap_or_else(|| "?".into())
 }
@@ -145,8 +145,8 @@ fn tool_status(state: &McpState) -> Json {
 }
 
 fn tool_scene(state: &McpState) -> String {
-    let g = state.h.cell.borrow().clone();
-    if let Some(f) = env_get(&g, "editor-scene") {
+    let g = *state.h.cell.borrow();
+    if let Some(f) = env_get(g, "editor-scene") {
         match crate::interp::apply(&f, &[], 0) {
             Ok(v) => return crate::json::value_to_json(&v).dump(),
             Err(e) => return format!("{{\"error\":\"{}\"}}", e.replace('"', "'")),

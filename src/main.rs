@@ -7,6 +7,7 @@
 #![allow(clippy::manual_is_multiple_of)]
 
 mod editor;
+mod gc;
 mod gpu;
 mod hal;
 mod interp;
@@ -18,7 +19,7 @@ mod simd;
 
 use hal::{Hal, OutputMode, Tex};
 use interp::{
-    apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Env,
+    apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Gc,
     GlobalCell, LoadRegistry, Value,
 };
 use std::cell::RefCell;
@@ -177,7 +178,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
-pub fn register_all(env: &Rc<Env>, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
+pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     interp::register_core(env, ctx);
     hal::register_hal(env, halrc, ctx.root.clone());
     simd::register_simd(env);
@@ -186,17 +187,18 @@ pub fn register_all(env: &Rc<Env>, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
-    let cell: GlobalCell = Rc::new(RefCell::new(env_new(None)));
+    let env0 = env_new(None);
+    // глобальное окружение сразу попадает в ячейку-корень: все аллокации
+    // register_all достижимы с первой же возможной сборки
+    let cell: GlobalCell = Rc::new(RefCell::new(env0));
     let registry: LoadRegistry = Rc::new(RefCell::new(vec![]));
     let ctx = CoreCtx {
         global: cell.clone(),
         registry,
         root,
     };
-    let env0 = env_new(None);
-    register_all(&env0, &ctx, &halrc);
-    env_define(&env0, "*root*", Value::Str(".".into()));
-    *cell.borrow_mut() = env0;
+    register_all(env0, &ctx, &halrc);
+    env_define(env0, "*root*", Value::Str(".".into()));
     (ctx, cell)
 }
 
@@ -205,10 +207,16 @@ fn run_eval(code: &str) -> Result<(), String> {
     let (ctx, cell) = make_context(halrc, PathBuf::from("."));
     let prog = parse_program(code)?;
     let mut last = Value::Nil;
+    // последний результат переживает сборки на границах форм — держим pin
+    let pin = gc::pin(vec![last.clone()]);
+    let g = *cell.borrow();
     for e in prog {
-        last = interp::eval(&e, &cell.borrow().clone(), 0)?;
+        last = interp::eval(&e, g, 0)?;
+        gc::pin_replace(&pin, vec![last.clone()]);
+        gc::maybe_collect(&[g], &[]);
     }
     println!("{}", fmt_value(&last));
+    drop(pin);
     let _ = ctx;
     Ok(())
 }
@@ -229,7 +237,7 @@ fn run_bench(args: &Args) -> Result<(), String> {
         (dotimes (i 20000) (set! pos (vec-add pos (vec-scale vel 0.016)))) \
         (- (time-now) t0))";
     let prog = parse_program(code)?;
-    let secs = interp::eval(&prog[0], &cell.borrow().clone(), 0)?;
+    let secs = interp::eval(&prog[0], *cell.borrow(), 0)?;
     let secs = match secs {
         Value::Float(f) => f,
         _ => return Err("бенчмарк: не число".into()),
@@ -253,7 +261,7 @@ fn run_bench(args: &Args) -> Result<(), String> {
               (set! j (+ j 1))))) \
         (- (time-now) t0))";
     let prog2 = parse_program(code_scalar)?;
-    let secs2 = interp::eval(&prog2[0], &cell.borrow().clone(), 0)?;
+    let secs2 = interp::eval(&prog2[0], *cell.borrow(), 0)?;
     let secs2 = match secs2 {
         Value::Float(f) => f,
         _ => return Err("бенчмарк: не число".into()),
@@ -316,7 +324,7 @@ fn bench_lisp_scene(halrc: Rc<RefCell<Hal>>, frames: usize) -> Result<f64, Strin
             .map(|i| Value::Int(if i % 4 == 3 { 255 } else { 200 }))
             .collect(),
     )));
-    env_define(&cell.borrow().clone(), "bench-sprite", sprite);
+    env_define(*cell.borrow(), "bench-sprite", sprite);
     let code = format!(
         "(begin \
          (define (bench-frame) \
@@ -331,7 +339,7 @@ fn bench_lisp_scene(halrc: Rc<RefCell<Hal>>, frames: usize) -> Result<f64, Strin
         frames
     );
     let prog = parse_program(&code)?;
-    let secs = interp::eval(&prog[0], &cell.borrow().clone(), 0)?;
+    let secs = interp::eval(&prog[0], *cell.borrow(), 0)?;
     match secs {
         Value::Float(f) => Ok(f * 1000.0 / frames as f64),
         _ => Err("бенчмарк 2D: Lisp вернул не число".into()),
@@ -537,17 +545,19 @@ pub fn reload_all(
     halrc: &Rc<RefCell<Hal>>,
     mtimes: &mut HashMap<PathBuf, SystemTime>,
 ) -> Result<usize, String> {
-    let g_old = ctx.global.borrow().clone();
+    let g_old = *ctx.global.borrow();
     let mut saved: Vec<(String, Value)> = vec![];
-    if let Some(Value::Table(t)) = env_get(&g_old, "*persistent*") {
+    if let Some(Value::Table(t)) = env_get(g_old, "*persistent*") {
         let keys: Vec<String> = t.borrow().keys().cloned().collect();
         for k in keys {
-            if let Some(v) = env_get(&g_old, &k) {
+            if let Some(v) = env_get(g_old, &k) {
                 saved.push((k, v));
             }
         }
     }
     let n_saved = saved.len();
+    // persistent-значения переживают сборки во время load_file — pin-корни
+    let _pin = gc::pin(saved.iter().map(|(_, v)| v.clone()).collect());
     // Этап 1 (менеджер GPU-ресурсов): старые текстуры, на которые не ссылается
     // persistent-состояние, освобождаются при reload — раньше они оставались в
     // реестре до рестарта (утечка ~64 КБ/текстуру за reload).
@@ -563,22 +573,24 @@ pub fn reload_all(
         );
     }
     let new_env = env_new(None);
-    register_all(&new_env, ctx, halrc);
+    *ctx.global.borrow_mut() = new_env;
+    register_all(new_env, ctx, halrc);
     env_define(
-        &new_env,
+        new_env,
         "*root*",
         Value::Str(ctx.root.to_string_lossy().into_owned()),
     );
-    *ctx.global.borrow_mut() = new_env.clone();
     let files: Vec<PathBuf> = ctx.registry.borrow().clone();
     for p in &files {
         load_file(p, ctx)?;
     }
     for (k, v) in saved {
-        if env_get(&new_env, &k).is_some() {
-            env_define(&new_env, &k, v);
+        if env_get(new_env, &k).is_some() {
+            env_define(new_env, &k, v);
         }
     }
+    // граница reload: старый мир (окружение/замыкания) собирается здесь
+    gc::maybe_collect(&[*ctx.global.borrow()], &[]);
     *mtimes = snapshot_mtimes(&files);
     Ok(n_saved)
 }
@@ -629,7 +641,7 @@ fn run_engine(args: &Args) -> Result<(), String> {
     )));
     let (ctx, cell) = make_context(halrc.clone(), root.clone());
     env_define(
-        &cell.borrow().clone(),
+        *cell.borrow(),
         "*root*",
         Value::Str(root.to_string_lossy().into_owned()),
     );
@@ -797,22 +809,22 @@ fn run_engine(args: &Args) -> Result<(), String> {
 
         // кадр: update(dt) → draw() → frame-end() (в паузе редактора — пропуск)
         if !editor_skip {
-            let g = cell.borrow().clone();
+            let g = *cell.borrow();
             let mut err: Option<String> = None;
-            if let Some(f) = env_get(&g, "update") {
+            if let Some(f) = env_get(g, "update") {
                 if let Err(e) = apply(&f, &[Value::Float(dt)], 0) {
                     err = Some(format!("update: {}", e));
                 }
             }
             if err.is_none() {
-                if let Some(f) = env_get(&g, "draw") {
+                if let Some(f) = env_get(g, "draw") {
                     if let Err(e) = apply(&f, &[], 0) {
                         err = Some(format!("draw: {}", e));
                     }
                 }
             }
             if err.is_none() {
-                if let Some(f) = env_get(&g, "frame-end") {
+                if let Some(f) = env_get(g, "frame-end") {
                     let _ = apply(&f, &[], 0);
                 }
             }
@@ -820,6 +832,11 @@ fn run_engine(args: &Args) -> Result<(), String> {
                 return Err(format!("кадр {}: {}", frames, e));
             }
         }
+
+        // Этап 2: граница форм — авто-сборка GC. Очередь ввода (Value-события)
+        // передаём как дополнительные корни: в будущем события могут нести пары.
+        let queue_roots = halrc.borrow().queue.clone();
+        gc::maybe_collect(&[*cell.borrow()], &queue_roots);
 
         frames += 1;
         sim_time += dt;
@@ -862,8 +879,8 @@ fn run_engine(args: &Args) -> Result<(), String> {
         let _ = Command::new("stty").arg("sane").status();
     }
 
-    let g = cell.borrow().clone();
-    let score = env_get(&g, "*score*")
+    let g = *cell.borrow();
+    let score = env_get(g, "*score*")
         .map(|v| fmt_value(&v))
         .unwrap_or_else(|| "?".into());
     let wall = wall_start.elapsed().as_secs_f64();

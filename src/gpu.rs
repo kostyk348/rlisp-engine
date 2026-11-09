@@ -230,6 +230,24 @@ pub fn collect_int_refs(v: &crate::interp::Value, out: &mut Vec<i64>, depth: u32
                 collect_int_refs(x, out, depth + 1);
             }
         }
+        Value::Cons(g) => {
+            // Этап 2: Cons-цепочка — элементы на одной глубине, cdr — по цепочке
+            // (итеративно, чтобы длинный список не съел лимит глубины); цикл — seen
+            use std::collections::HashSet;
+            let mut seen: HashSet<u32> = HashSet::new();
+            let mut cur = *g;
+            loop {
+                if !seen.insert(cur.idx) {
+                    break;
+                }
+                let (a, d) = crate::gc::pair_get(cur);
+                collect_int_refs(&a, out, depth + 1);
+                match d {
+                    crate::interp::Value::Cons(next) => cur = next,
+                    _ => break,
+                }
+            }
+        }
         Value::Vector(r) => {
             for x in r.borrow().iter() {
                 collect_int_refs(x, out, depth + 1);
