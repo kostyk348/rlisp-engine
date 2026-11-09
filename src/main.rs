@@ -362,7 +362,7 @@ fn run_bench_parse() -> Result<(), String> {
     // отдельный замер ТОЛЬКО лексического скана (без построения Value) —
     // показывает вклад самой векторизации, честно помечен
     let iters = 200usize;
-    let _bs = total_bytes as f64 * iters as f64;
+    let bs = total_bytes as f64 * iters as f64;
     let mbs = |d: std::time::Duration| bs / d.as_secs_f64() / 1e6;
     let mut lex_scalar = 0usize;
     let mut lex_simd = 0usize;
