@@ -7,6 +7,14 @@
 // Примитивы:
 //   gpu3d-clear     — очистка цвета + z-буфера (+ сброс статистики кадра)
 //   gpu3d-light     — направленный свет и фоновая освещённость (fixed-function)
+//                     этап 7: + блик Blinn-Phong (spec, shininess — опц. аргументы)
+//   gpu3d-view      — позиция камеры в мире (для half-vector блика)
+//   gpu3d-mat-tiling— множители UV перед семплингом (repeat-текстуры)
+//   gpu3d-alpha-test— порог alpha (cutout): тексель с alpha < порога отбрасывается
+//                     ДО записи в z-буфер (семантика discard у GPU)
+//   gpu3d-fog       — экспоненциальный туман: 1 - exp(-density * глубина),
+//                     смешение ПОСЛЕ шейдинга, только для непрозрачных поверхностей
+//   gpu3d-state     — таблица текущего состояния конвейера (свет/блик/туман/…)
 //   gpu3d-mesh      — сетка: T&L → near-clip → backface cull → проекция →
 //                     z-буфер → flat-затенение (Lambert)
 //   gpu3d-mesh-tex  — то же + текстурирование: перспектива-корректный UV
@@ -37,6 +45,21 @@ pub struct R3 {
     pub diffuse: f32,
     pub drawn: u64,
     pub culled: u64,
+    // — этап 7 «материалы»: состояние конвейера, как у fixed-function GPU —
+    /// Порог alpha (cutout): 0 = выкл (дефолт); 0.1..1 — тексели текстурных
+    /// граней с alpha < порога отбрасываются целиком (и цвет, и z-запись).
+    pub alpha_test: f32,
+    /// Сила блика Blinn-Phong: 0 = выкл (дефолт, старое поведение Lambert).
+    pub spec: f32,
+    /// Показатель степени блика (шершавость): больше — пятно блика уже.
+    pub shininess: f32,
+    /// Позиция камеры в мире (gpu3d-view) — нужен для half-vector блика.
+    pub view: [f32; 3],
+    /// Множители UV перед семплингом: (1,1) — как раньше (clamp к краю),
+    /// (u,v) ≠ (1,1) — repeat через fract (тайлинг текстуры).
+    pub tiling: [f32; 2],
+    /// Туман: [r g b density]; density 0 = выкл (дефолт).
+    pub fog: [f32; 4],
 }
 
 impl Default for R3 {
@@ -56,6 +79,12 @@ impl R3 {
             diffuse: 0.75,
             drawn: 0,
             culled: 0,
+            alpha_test: 0.0,
+            spec: 0.0,
+            shininess: 32.0,
+            view: [0.0, 0.0, 0.0],
+            tiling: [1.0, 1.0],
+            fog: [0.7, 0.8, 0.9, 0.0],
         }
     }
 
@@ -70,6 +99,73 @@ impl R3 {
 
 fn col(x: f64) -> u8 {
     (x * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+// ——— этап 7 «материалы»: чистые функции ядра шейдинга (покрыты юнит-тестами) ———
+
+/// Фактор экспоненциального тумана: 1 - exp(-density * глубина).
+/// density 0 или глубина 0 → 0 (без тумана); растёт монотонно к 1.
+#[allow(dead_code)] // живеет в растре (M1, следующий коммит этапа 7)
+#[inline]
+pub(crate) fn fog_factor(density: f32, depth: f32) -> f32 {
+    (1.0 - (-(density.max(0.0) * depth.max(0.0))).exp()).clamp(0.0, 1.0)
+}
+
+/// Предикат alpha-test: тексель с alpha < порога отбрасывается.
+/// threshold <= 0 — тест выключен (всё проходит); граница включительная:
+/// alpha/255 == порог — тексель ОСТАЁТСЯ (как `if (a >= cutoff) discard` нет:
+/// у GPU обычно `alpha < cutoff → discard`, т.е. равный порогу проходит).
+#[allow(dead_code)] // живеет в растре (M1, следующий коммит этапа 7)
+#[inline]
+pub(crate) fn alpha_keep(a: u8, threshold: f32) -> bool {
+    threshold <= 0.0 || (a as f32 / 255.0) >= threshold
+}
+
+/// Координата семплинга с учётом тайлинга: tiling == 1 — координата как есть
+/// (старое поведение: clamp к краю текстуры), иначе repeat через fract.
+#[allow(dead_code)] // живеет в растре (M1, следующий коммит этапа 7)
+#[inline]
+pub(crate) fn tiled_coord(u: f32, tiling: f32) -> f32 {
+    if tiling == 1.0 {
+        u
+    } else {
+        (u * tiling).fract()
+    }
+}
+
+/// Интенсивность блика Blinn-Phong: strength * max(N·H, 0)^shininess.
+#[allow(dead_code)] // живеет в растре (M1, следующий коммит этапа 7)
+#[inline]
+pub(crate) fn spec_highlight(ndh: f32, shininess: f32, strength: f32) -> f32 {
+    if strength <= 0.0 || ndh <= 0.0 {
+        0.0
+    } else {
+        strength * ndh.powf(shininess.max(1.0))
+    }
+}
+
+/// Разбор аргументов gpu3d-light с честным фолбэком:
+/// (dx dy dz ambient [diffuse [spec [shininess]]]) —
+/// отсутствующие опциональные аргументы сохраняют прежнее состояние
+/// (старые вызовы с 4-5 аргументами работают байт-в-байт как раньше).
+pub(crate) fn apply_light_args(r3: &mut R3, args: &[Value]) -> Result<(), String> {
+    need_args(args, 4)?;
+    r3.light = [
+        num_val(&args[0])? as f32,
+        num_val(&args[1])? as f32,
+        num_val(&args[2])? as f32,
+    ];
+    r3.ambient = num_val(&args[3])? as f32;
+    if let Some(v) = args.get(4) {
+        r3.diffuse = num_val(v)? as f32;
+    }
+    if let Some(v) = args.get(5) {
+        r3.spec = num_val(v)?.max(0.0) as f32;
+    }
+    if let Some(v) = args.get(6) {
+        r3.shininess = num_val(v)?.max(1.0) as f32;
+    }
+    Ok(())
 }
 
 #[inline]
@@ -799,20 +895,107 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Nil)
     });
 
+    // свет: (gpu3d-light dx dy dz ambient [diffuse [spec [shininess]]]) —
+    // опц. аргументы этапа 7: сила блика Blinn-Phong и его показатель.
+    // Прежние вызовы (4-5 аргументов) ведут себя байт-в-байт как раньше.
     let hc = hal.clone();
     def(env, "gpu3d-light", move |args| {
-        need(args, 4)?;
         let mut h = hc.borrow_mut();
-        h.r3.light = [
+        apply_light_args(&mut h.r3, args)?;
+        Ok(Value::Nil)
+    });
+
+    // позиция камеры в мире (для half-vector блика Blinn-Phong)
+    let hc = hal.clone();
+    def(env, "gpu3d-view", move |args| {
+        need(args, 3)?;
+        let mut h = hc.borrow_mut();
+        h.r3.view = [
             num_val(&args[0])? as f32,
             num_val(&args[1])? as f32,
             num_val(&args[2])? as f32,
         ];
-        h.r3.ambient = num_val(&args[3])? as f32;
-        if let Some(v) = args.get(4) {
-            h.r3.diffuse = num_val(v)? as f32;
-        }
         Ok(Value::Nil)
+    });
+
+    // тайлинг UV: (gpu3d-mat-tiling u v) — множители перед семплингом
+    // (repeat-текстуры: трава, стены). (gpu3d-mat-tiling 1 1) — сброс/выкл.
+    let hc = hal.clone();
+    def(env, "gpu3d-mat-tiling", move |args| {
+        need(args, 2)?;
+        let mut h = hc.borrow_mut();
+        h.r3.tiling = [
+            num_val(&args[0])?.clamp(0.0, 1024.0) as f32,
+            num_val(&args[1])?.clamp(0.0, 1024.0) as f32,
+        ];
+        Ok(Value::Nil)
+    });
+
+    // alpha-test (cutout): (gpu3d-alpha-test threshold) —
+    // 0 = выкл (дефолт); 0.1..1 — тексели с alpha < порога отбрасываются
+    // ДО записи в z-буфер (за дыркой в билборде видно то, что позади).
+    let hc = hal.clone();
+    def(env, "gpu3d-alpha-test", move |args| {
+        need(args, 1)?;
+        let mut h = hc.borrow_mut();
+        h.r3.alpha_test = num_val(&args[0])?.clamp(0.0, 1.0) as f32;
+        Ok(Value::Nil)
+    });
+
+    // туман: (gpu3d-fog r g b density) — экспоненциальный, по истинной
+    // глубине (1/w), смешение после шейдинга; density 0 = выкл (дефолт).
+    let hc = hal.clone();
+    def(env, "gpu3d-fog", move |args| {
+        need(args, 4)?;
+        let mut h = hc.borrow_mut();
+        h.r3.fog = [
+            num_val(&args[0])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[1])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[2])?.clamp(0.0, 1.0) as f32,
+            num_val(&args[3])?.clamp(0.0, 100.0) as f32,
+        ];
+        Ok(Value::Nil)
+    });
+
+    // инспекция состояния конвейера (материалы/редактор/отладка):
+    // таблица с ключами light/ambient/diffuse/spec/shininess/view/tiling/
+    // alpha-test/fog
+    let hc = hal.clone();
+    def(env, "gpu3d-state", move |_: &[Value]| {
+        let h = hc.borrow();
+        let r3 = &h.r3;
+        let v3 = |a: [f32; 3]| {
+            Value::List(vec![
+                Value::Float(a[0] as f64),
+                Value::Float(a[1] as f64),
+                Value::Float(a[2] as f64),
+            ])
+        };
+        let mut t = std::collections::HashMap::new();
+        t.insert("light".into(), v3(r3.light));
+        t.insert("ambient".into(), Value::Float(r3.ambient as f64));
+        t.insert("diffuse".into(), Value::Float(r3.diffuse as f64));
+        t.insert("spec".into(), Value::Float(r3.spec as f64));
+        t.insert("shininess".into(), Value::Float(r3.shininess as f64));
+        t.insert("view".into(), v3(r3.view));
+        t.insert(
+            "tiling".into(),
+            Value::List(vec![
+                Value::Float(r3.tiling[0] as f64),
+                Value::Float(r3.tiling[1] as f64),
+            ]),
+        );
+        t.insert("alpha-test".into(), Value::Float(r3.alpha_test as f64));
+        t.insert(
+            "fog".into(),
+            Value::List(vec![
+                Value::Float(r3.fog[0] as f64),
+                Value::Float(r3.fog[1] as f64),
+                Value::Float(r3.fog[2] as f64),
+                Value::Float(r3.fog[3] as f64),
+            ]),
+        );
+        Ok(Value::Table(Rc::new(RefCell::new(t))))
     });
 
     let hc = hal.clone();
@@ -937,4 +1120,127 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             Value::Int(h.r3.culled as i64),
         ]))
     });
+}
+
+// ————————————————————————————————————————————————————————————————————————
+// Тесты этапа 7 «материалы»: чистые функции ядра шейдинга + разбор
+// аргументов света с фолбэком. Растеризация покрывается интеграционно
+// (smoke.sh + --capture в M3), здесь — математика.
+// ————————————————————————————————————————————————————————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn близко(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn кривая_тумана_экспоненциальная_и_монотонная() {
+        // density 0 или глубина 0 — тумана нет
+        assert!(близко(fog_factor(0.0, 100.0), 0.0));
+        assert!(близко(fog_factor(0.25, 0.0), 0.0));
+        // эталонные точки: 1 - exp(-d*x)
+        assert!(близко(fog_factor(0.1, 10.0), 1.0 - (-1.0f32).exp()));
+        assert!(близко(fog_factor(1.0, 5.0), 1.0 - (-5.0f32).exp()));
+        assert!(близко(fog_factor(2.0, 2.0), 1.0 - (-4.0f32).exp()));
+        // монотонность по обеим переменным, насыщение ≤ 1
+        assert!(fog_factor(0.1, 20.0) > fog_factor(0.1, 10.0));
+        assert!(fog_factor(0.2, 10.0) > fog_factor(0.1, 10.0));
+        assert!(fog_factor(100.0, 100.0) <= 1.0);
+        // отрицательные входы (мусор от скрипта) не паникуют и не дают < 0
+        assert!(близко(fog_factor(-1.0, 10.0), 0.0));
+        assert!(близко(fog_factor(0.1, -5.0), 0.0));
+    }
+
+    #[test]
+    fn альфа_тест_граница_включительная() {
+        // выкл: порог 0 пропускает всё, включая полностью прозрачное
+        assert!(alpha_keep(0, 0.0));
+        // граница: alpha/255 == порог — тексель ОСТАЁТСЯ
+        assert!(alpha_keep(26, 0.1)); // 26/255 = 0.10196 ≥ 0.1
+        assert!(!alpha_keep(25, 0.1)); // 25/255 = 0.09804 < 0.1
+                                       // полный альфа-канал проходит даже при пороге 1
+        assert!(alpha_keep(255, 1.0));
+        assert!(!alpha_keep(254, 1.0));
+        // порог 0.5: граница 127/128
+        assert!(!alpha_keep(127, 0.5)); // 0.498 < 0.5
+        assert!(alpha_keep(128, 0.5)); // 0.502 ≥ 0.5
+    }
+
+    #[test]
+    fn тайлинг_математика_repeat_и_пасsthrough() {
+        // tiling 1 — координата без изменений (старое поведение clamp)
+        assert!(близко(tiled_coord(0.75, 1.0), 0.75));
+        assert!(близко(tiled_coord(0.0, 1.0), 0.0));
+        assert!(близко(tiled_coord(1.0, 1.0), 1.0));
+        // repeat: u=0.75 при tiling 2 → 1.5 → fract 0.5
+        assert!(близко(tiled_coord(0.75, 2.0), 0.5));
+        // u=1.0 при tiling 2 → 2.0 → fract 0 (шов стыкуется с началом)
+        assert!(близко(tiled_coord(1.0, 2.0), 0.0));
+        // u=1.3 при tiling 3 → 3.9 → fract 0.9
+        assert!(близко(tiled_coord(1.3, 3.0), 0.9));
+        // нулевой tiling схлопывает координату в 0
+        assert!(близко(tiled_coord(0.42, 0.0), 0.0));
+    }
+
+    #[test]
+    fn блик_блинн_фонга_нулевые_и_граничные() {
+        // сила 0 — блика нет (старый Lambert-путь, ноль накладных расходов)
+        assert!(близко(spec_highlight(0.9, 32.0, 0.0), 0.0));
+        // N·H ≤ 0 — блик нет (half-vector за гранью)
+        assert!(близко(spec_highlight(0.0, 32.0, 1.0), 0.0));
+        assert!(близко(spec_highlight(-0.5, 32.0, 1.0), 0.0));
+        // идеальное отражение: N·H = 1 → ровно strength (любая shininess)
+        assert!(близко(spec_highlight(1.0, 32.0, 0.7), 0.7));
+        assert!(близко(spec_highlight(1.0, 1.0, 0.7), 0.7));
+        // рост показателя сужает блик: при N·H=0.5 и shininess 1 → 0.5*strength
+        assert!(близко(spec_highlight(0.5, 1.0, 1.0), 0.5));
+        assert!(spec_highlight(0.5, 64.0, 1.0) < spec_highlight(0.5, 8.0, 1.0));
+        // shininess < 1 из скрипта поднимается до 1 (powf корректен)
+        assert!(близко(spec_highlight(0.5, 0.0, 1.0), 0.5));
+    }
+
+    #[test]
+    fn свет_разбор_аргументов_фолбэк_прежнее_состояние() {
+        let f = |x: f64| Value::Float(x);
+        // старый вызов 4 аргументов: spec остаётся прежним (0 по умолчанию)
+        let mut r3 = R3::new();
+        apply_light_args(&mut r3, &[f(0.1), f(0.2), f(0.3), f(0.4)]).unwrap();
+        assert!(близко(r3.light[0], 0.1));
+        assert!(близко(r3.ambient, 0.4));
+        assert!(близко(r3.diffuse, 0.75)); // дефолт не тронут
+        assert!(близко(r3.spec, 0.0));
+        assert!(близко(r3.shininess, 32.0));
+        // 5 аргументов (как было в v0.2+): diffuse задаётся, spec не трогается
+        let mut r3 = R3::new();
+        apply_light_args(&mut r3, &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9)]).unwrap();
+        assert!(близко(r3.diffuse, 0.9));
+        assert!(близко(r3.spec, 0.0));
+        // 7 аргументов: включает блик
+        apply_light_args(
+            &mut r3,
+            &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(0.6), f(16.0)],
+        )
+        .unwrap();
+        assert!(близко(r3.spec, 0.6));
+        assert!(близко(r3.shininess, 16.0));
+        // фолбэк: 6 аргументов — shininess сохраняет прежнее значение
+        apply_light_args(&mut r3, &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(0.3)]).unwrap();
+        assert!(близко(r3.spec, 0.3));
+        assert!(близко(r3.shininess, 16.0));
+        // мусорные значения: отрицательный spec/shininess срезаются
+        apply_light_args(
+            &mut r3,
+            &[f(0.0), f(1.0), f(0.0), f(0.2), f(0.9), f(-1.0), f(0.0)],
+        )
+        .unwrap();
+        assert!(близко(r3.spec, 0.0));
+        assert!(близко(r3.shininess, 1.0));
+        // мало аргументов — честная ошибка, состояние не меняется
+        let mut r3 = R3::new();
+        assert!(apply_light_args(&mut r3, &[f(0.1), f(0.2), f(0.3)]).is_err());
+        assert!(близко(r3.light[0], 0.45)); // дефолт
+    }
 }
