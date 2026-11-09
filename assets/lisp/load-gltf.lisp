@@ -213,11 +213,11 @@
          (world (if parent
                    (mat4-mul parent (gltf-node-mat node))
                    (gltf-node-mat node))))
-    (define (go kids)
+    (define (go kids acc)
       (if (null? kids)
-          walk
+          acc
           (go (cdr kids)
-              (gltf-node doc nodes (car kids) world walk))))
+              (gltf-node doc nodes (car kids) world acc))))
     (if (table-has? node "mesh")
         (go (table-get node "children" '())
             (cons (list (table-get node "mesh") world) walk))
