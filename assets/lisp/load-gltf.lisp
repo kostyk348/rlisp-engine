@@ -209,8 +209,8 @@
 ;; ——— обход сцены: → список (mesh-idx матрица-мира) ———
 
 (define (gltf-node doc nodes node-idx parent walk)
-  (let ((node (nth nodes node-idx))
-        (world (if parent
+  (let* ((node (nth nodes node-idx))
+         (world (if parent
                    (mat4-mul parent (gltf-node-mat node))
                    (gltf-node-mat node))))
     (define (go kids)
