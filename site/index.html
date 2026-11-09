@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rlisp-engine — игровой движок как Lisp-машина</title>
+<meta name="description" content="Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL. wgpu-бэкенд, редактор аля Unity, MCP (AI Ready).">
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#11151f; --card:#151a26; --border:#232a3a;
+    --text:#dbe2f0; --muted:#8a94a8; --accent:#7ee787; --accent2:#79c0ff;
+    --warn:#f0b429; --plan:#5b6478;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,Ubuntu,sans-serif;line-height:1.6}
+  a{color:var(--accent2);text-decoration:none} a:hover{text-decoration:underline}
+  code,pre{font-family:"SF Mono",Consolas,"Liberation Mono",monospace}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px}
+  header{padding:64px 0 40px;border-bottom:1px solid var(--border);
+    background:radial-gradient(1200px 400px at 70% -10%,rgba(126,231,135,.08),transparent)}
+  h1{font-size:2.3rem;letter-spacing:-.5px}
+  h1 .lisp{color:var(--accent)}
+  .tagline{color:var(--muted);font-size:1.15rem;margin:10px 0 18px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  .badge{font-size:.72rem;padding:3px 10px;border-radius:20px;border:1px solid var(--border);background:var(--bg2);color:var(--muted)}
+  .badge.ok{border-color:rgba(126,231,135,.4);color:var(--accent)}
+  .lang{position:absolute;top:16px;right:20px}
+  .lang button{background:var(--bg2);border:1px solid var(--border);color:var(--muted);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:.8rem}
+  .lang button:hover{color:var(--text)}
+  header .wrap{position:relative}
+  section{padding:44px 0;border-bottom:1px solid var(--border)}
+  h2{font-size:1.45rem;margin-bottom:18px;letter-spacing:-.3px}
+  h2::before{content:"; ";color:var(--accent);font-family:monospace}
+  pre{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px;overflow-x:auto;font-size:.85rem;color:#c9d1d9}
+  .layers{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+  .layer{border:1px solid var(--border);border-left:3px solid var(--accent2);background:var(--card);border-radius:8px;padding:12px 16px}
+  .layer b{display:block;color:var(--accent2);font-size:.9rem}
+  .layer span{color:var(--muted);font-size:.88rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .card h3{font-size:1rem;color:var(--accent);margin-bottom:8px}
+  .card p{color:var(--muted);font-size:.9rem}
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px}
+  td.st{white-space:nowrap}
+  .pill{font-size:.72rem;padding:2px 10px;border-radius:12px;border:1px solid}
+  .pill.done{color:var(--accent);border-color:rgba(126,231,135,.5)}
+  .pill.wip{color:var(--warn);border-color:rgba(240,180,41,.5)}
+  .pill.plan{color:var(--plan);border-color:var(--plan)}
+  td .crit{display:block;color:var(--muted);font-size:.8rem;margin-top:3px}
+  footer{padding:28px 0;color:var(--muted);font-size:.85rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  @media(max-width:640px){h1{font-size:1.7rem}th:nth-child(3),td:nth-child(3){display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="lang"><button id="langBtn" onclick="toggleLang()">EN</button></div>
+    <div class="badges">
+      <span class="badge ok">Rust · zero dependencies</span>
+      <span class="badge">MIT</span>
+      <span class="badge">v0.3 → v0.4 wgpu</span>
+      <span class="badge ok">MCP · AI Ready</span>
+    </div>
+    <h1>rlisp<span class="lisp">-engine</span></h1>
+    <p class="tagline t" data-ru="Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL."
+       data-en="A game engine as a Lisp machine: Rust is only the HAL, everything else is a DSL.">
+       Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL.</p>
+    <a class="t" data-ru="Открыть репозиторий →" data-en="Open repository →"
+       href="https://github.com/kostyk348/rlisp-engine">Открыть репозиторий →</a>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2 class="t" data-ru="Архитектура" data-en="Architecture">Архитектура</h2>
+    <div class="layers">
+      <div class="layer"><b>УРОВЕНЬ 4 · <span class="t" data-ru="Игровые DSL (жанровые)" data-en="Game DSLs (genre-level)">Игровые DSL (жанровые)</span></b>
+        <span class="t" data-ru="(defgame survival …) (defenemy grunt …) — «ORBITAL» на game3d.lisp" data-en="(defgame survival …) (defenemy grunt …) — «ORBITAL» on game3d.lisp">(defgame survival …) (defenemy grunt …) — «ORBITAL» на game3d.lisp</span></div>
+      <div class="layer"><b>УРОВЕНЬ 3 · <span class="t" data-ru="Системные DSL — всё на Lisp" data-en="System DSLs — everything in Lisp">Системные DSL — всё на Lisp</span></b>
+        <span>graphics · input · ecs · physics · render3d · textures · editor</span></div>
+      <div class="layer"><b>УРОВЕНЬ 2 · <span class="t" data-ru="Lisp-интерпретатор + SAL" data-en="Lisp interpreter + SAL">Lisp-интерпретатор + SAL</span></b>
+        <span class="t" data-ru="Reader · Evaluator (TCO) · defmacro/quasiquote · F32Vec · SIMD" data-en="Reader · Evaluator (TCO) · defmacro/quasiquote · F32Vec · SIMD">Reader · Evaluator (TCO) · defmacro/quasiquote · F32Vec · SIMD</span></div>
+      <div class="layer"><b>УРОВЕНЬ 1 · <span class="t" data-ru="Rust HAL — окно/растр, 3D-конвейер, ввод, память, PNG, MCP" data-en="Rust HAL — window/raster, 3D pipeline, input, memory, PNG, MCP">Rust HAL — окно/растр, 3D-конвейер, ввод, память, PNG, MCP</span></b>
+        <span class="t" data-ru="hal.rs · render3d.rs · png.rs · editor.rs · mcp.rs · simd.rs — и wgpu-бэкенд за тем же фасадом (этап 1 роадмапа)" data-en="hal.rs · render3d.rs · png.rs · editor.rs · mcp.rs · simd.rs — plus a wgpu backend behind the same facade (roadmap stage 1)">hal.rs · render3d.rs · png.rs · editor.rs · mcp.rs · simd.rs — и wgpu-бэкенд за тем же фасадом (этап 1 роадмапа)</span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="t" data-ru="Что уже работает" data-en="What already works">Что уже работает</h2>
+    <div class="grid">
+      <div class="card"><h3>3D-конвейер без GPU-API</h3>
+        <p class="t" data-ru="T&amp;L, z-буфер, перспектива-корректные текстуры (свой PNG-декодер с полным inflate), батч-вершинник: сотни объектов одним draw call (~3× против по-объектных вызовов)."
+           data-en="T&amp;L, z-buffer, perspective-correct textures (own PNG decoder with full inflate), batch renderer: hundreds of objects in one draw call (~3× vs per-object calls).">
+        T&amp;L, z-буфер, перспектива-корректные текстуры (свой PNG-декодер с полным inflate), батч-вершинник: сотни объектов одним draw call (~3× против по-объектных вызовов).</p></div>
+      <div class="card"><h3>Редактор аля Unity (--serve)</h3>
+        <p class="t" data-ru="Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp."
+           data-en="Scene hierarchy, inspector, live view (PNG stream), REPL, asset editor with hot reload — all UI talks to the engine through Lisp.">
+        Иерархия сцены, инспектор, живой вид (PNG-стрим), REPL, редактор ассетов с hot reload — весь UI общается с движком через Lisp.</p></div>
+      <div class="card"><h3>MCP · AI Ready (--mcp)</h3>
+        <p class="t" data-ru="Model Context Protocol (JSON-RPC 2.0, stdio): ИИ-агент видит сцену, спавнит сущности, исполняет Lisp, шагает симуляцию и получает скриншоты."
+           data-en="Model Context Protocol (JSON-RPC 2.0, stdio): an AI agent sees the scene, spawns entities, runs Lisp, steps the simulation and receives screenshots.">
+        Model Context Protocol (JSON-RPC 2.0, stdio): ИИ-агент видит сцену, спавнит сущности, исполняет Lisp, шагает симуляцию и получает скриншоты.</p></div>
+      <div class="card"><h3>Ноль зависимостей</h3>
+        <p class="t" data-ru="HAL, интерпретатор, SIMD и PNG-писатель написаны с нуля. Дефолтная сборка не тянет ни одного крейта; wgpu — опциональная фича, не ломающая это правило."
+           data-en="HAL, interpreter, SIMD and the PNG writer are written from scratch. The default build pulls zero crates; wgpu is an optional feature that keeps this rule.">
+        HAL, интерпретатор, SIMD и PNG-писатель написаны с нуля. Дефолтная сборка не тянет ни одного крейта; wgpu — опциональная фича, не ломающая это правило.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="t" data-ru="Быстрый старт" data-en="Quickstart">Быстрый старт</h2>
+<pre>git clone https://github.com/kostyk348/rlisp-engine && cd rlisp-engine
+cargo build --release
+
+# 3D-демо «ORBITAL» (кадры PNG без экрана)
+./target/release/rlisp-engine --script assets/lisp/main3d.lisp \
+    --capture demo/frames3d --every 12 --frames 240 --fast
+
+# Редактор в браузере          # MCP-сервер для ИИ-агента
+./target/release/rlisp-engine --serve --port 7300 --script assets/lisp/main3d.lisp
+./target/release/rlisp-engine --mcp --script assets/lisp/main3d.lisp</pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="t" data-ru="Роадмап" data-en="Roadmap">Роадмап</h2>
+    <table>
+      <thead><tr>
+        <th class="t" data-ru="Этап" data-en="Stage">Этап</th>
+        <th class="t" data-ru="Содержание" data-en="Scope">Содержание</th>
+        <th class="t" data-ru="Критерий" data-en="Done criterion">Критерий</th>
+        <th class="t" data-ru="Статус" data-en="Status">Статус</th>
+      </tr></thead>
+      <tbody>
+        <tr><td><b>1</b></td><td><span class="t" data-ru="wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование" data-en="wgpu behind the HAL facade, GPU resource manager, profiling">wgpu за фасадом HAL, менеджер GPU-ресурсов, профилирование</span><span class="crit">--wgpu · 100 reload без роста памяти</span></td><td class="st"><span class="pill wip t" data-ru="в работе" data-en="in progress">в работе</span></td></tr>
+        <tr><td><b>2</b></td><td><span class="t" data-ru="Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки" data-en="Full Lisp: Cons alongside Vec, tracing GC, threads">Полноценный Lisp: cons рядом с Vec, tracing-GC, потоки</span><span class="crit">(cons 1 2) · 1000 циклов замыканий · MCP не крашит игру</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>3</b></td><td><span class="t" data-ru="JIT (copy-and-patch, Cranelift), SIMD в токенизаторе и GC, деоптимизация" data-en="JIT (copy-and-patch, Cranelift), SIMD in tokenizer and GC, deopt">JIT (copy-and-patch, Cranelift), SIMD в токенизаторе и GC, деоптимизация</span><span class="crit">eval ≥5× · парсер ≥3× · property-тесты ловят JIT-баги</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>4</b></td><td><span class="t" data-ru="Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер" data-en="Background MCP: MCP↔game channel, resources, screenshots + profiler">Фоновый MCP: канал MCP↔игра, resources, скриншоты + профайлер</span><span class="crit">AI делает 100 шагов и итерирует в замкнутом цикле</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>5</b></td><td><span class="t" data-ru="Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md" data-en="Demos: 3D game on wgpu (5–10 min), 2D survival, gifs + benchmark.md">Демо: 3D-игра на wgpu (5–10 мин), 2D «Выживание», гифки + benchmark.md</span><span class="crit t" data-ru="посторонний играет 5 минут без падений" data-en="a stranger plays 5 minutes without crashes">посторонний играет 5 минут без падений</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>6</b></td><td><span class="t" data-ru="Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp" data-en="Editor: gizmos, prefab drag-n-drop, saving scene as Lisp">Редактор: gizmo-манипуляторы, drag-n-drop префабов, сохранение сцены в Lisp</span><span class="crit t" data-ru="сцену можно собрать мышкой и сохранить в .lisp" data-en="build a scene with the mouse and save it as .lisp">сцену можно собрать мышкой и сохранить в .lisp</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+        <tr><td><b>7</b></td><td><span class="t" data-ru="wasm-таргет, мобильный таргет, fallback SIMD" data-en="wasm target, mobile target, scalar SIMD fallback">wasm-таргет, мобильный таргет, fallback SIMD</span><span class="crit t" data-ru="одна .lisp-сцена работает на десктопе и в браузере" data-en="one .lisp scene runs on desktop and in the browser">одна .lisp-сцена работает на десктопе и в браузере</span></td><td class="st"><span class="pill plan t" data-ru="план" data-en="planned">план</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;width:100%">
+    <span>© 2026 kostyk348 · MIT</span>
+    <a href="https://github.com/kostyk348/rlisp-engine">github.com/kostyk348/rlisp-engine</a>
+  </div>
+</footer>
+
+<script>
+function toggleLang(){
+  const en=document.documentElement.lang==='ru';
+  document.documentElement.lang=en?'en':'ru';
+  document.getElementById('langBtn').textContent=en?'RU':'EN';
+  document.querySelectorAll('.t').forEach(e=>{e.textContent=en?e.dataset.en:e.dataset.ru;});
+}
+</script>
+</body>
+</html>
