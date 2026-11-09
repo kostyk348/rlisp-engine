@@ -111,7 +111,7 @@ check "материалы: draw-mesh-tex берёт :texture из материа
 check "этап 7: блик/туман/камера в gpu3d-state" "#t" \
   "$MATL (gpu3d-light 0 1 0 0.2 0.9 0.5 8) (gpu3d-fog 1 0 0 0.5) (gpu3d-view 0 0 5) (let ((st (gpu3d-state))) (and (= (table-get st 'spec) 0.5) (= (table-get st 'shininess) 8) (= (caddr (table-get st 'view)) 5) (= (cadddr (table-get st 'fog)) 0.5)))"
 check "этап 7: свет со старой сигнатурой — опц. аргументы сохраняют прежние" "#t" \
-  "$MATL (gpu3d-light 0 1 0 0.2 0.9 0.5 8) (gpu3d-light 0 1 0 0.2 0.9) (gpu3d-light 0 1 0 0.2) (and (= (table-get (gpu3d-state) 'spec) 0.5) (= (table-get (gpu3d-state) 'shininess) 8) (= (table-get (gpu3d-state) 'diffuse) 0.9))"
+  "$MATL (gpu3d-light 0 1 0 0.2 0.75 0.5 8) (gpu3d-light 0 1 0 0.2 0.75) (gpu3d-light 0 1 0 0.2) (and (= (table-get (gpu3d-state) 'spec) 0.5) (= (table-get (gpu3d-state) 'shininess) 8) (= (table-get (gpu3d-state) 'diffuse) 0.75))"
 
 # — Этап 2: MCP-молотилка — 102 запроса поверх живой игры 3D, все отвечены.
 MCP_IN=$(mktemp); MCP_OUT=$(mktemp)
