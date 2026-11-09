@@ -100,6 +100,19 @@ check "GC: 1000 циклов замыканий — куча не растёт" 
 check "GC: счётчики сборок и освобождений растут" "#t" \
   "(load \"assets/lisp/core.lisp\") (gc) (define c0 (table-get (gc-stats) (quote collections) 0)) (define f0 (table-get (gc-stats) (quote freed) 0)) (dotimes (i 100) (cons i i)) (gc) (and (> (table-get (gc-stats) (quote collections) 0) c0) (> (table-get (gc-stats) (quote freed) 0) f0))"
 
+# — Этап 7: материалы (alpha-test, блик Blinn-Phong, тайлинг, туман) —
+MATL='(load "assets/lisp/core.lisp") (load "assets/lisp/render3d.lisp") (load "assets/lisp/textures.lisp") (load "assets/lisp/materials.lisp") (window-create 64 64 "t") (gpu3d-clear 0 0 0)'
+check "материалы: use-material! применяет состояние конвейера" "(2.0 4.0 0.6 32.0 0.4)" \
+  "$MATL (defmaterial 'трава ':tiling '(2 4) ':spec 0.6 ':shininess 32 ':alpha-test 0.4) (use-material! 'трава) (let ((st (gpu3d-state))) (list (car (table-get st 'tiling)) (cadr (table-get st 'tiling)) (table-get st 'spec) (table-get st 'shininess) (table-get st 'alpha-test)))"
+check "материалы: material-reset! возвращает нейтральное состояние" "(1.0 0.0 0.0)" \
+  "$MATL (defmaterial 'м ':spec 0.9 ':alpha-test 0.5 ':tiling '(3 3)) (use-material! 'м) (material-reset!) (let ((st (gpu3d-state))) (list (car (table-get st 'tiling)) (table-get st 'spec) (table-get st 'alpha-test)))"
+check "материалы: draw-mesh-tex берёт :texture из материала" "6" \
+  "$MATL (defmaterial 'куб ':texture (tex-checker 4 2 (list 1 1 1) (list 0 0 0))) (draw-mesh-tex (mesh-cube 1.0) (mesh-cube-uv) 0 (mat-identity) (camera-mvp (list 3 3 3) (list 0 0 0) 0.9) (list 1 1 1) 'куб)"
+check "этап 7: блик/туман/камера в gpu3d-state" "#t" \
+  "$MATL (gpu3d-light 0 1 0 0.2 0.9 0.5 8) (gpu3d-fog 1 0 0 0.5) (gpu3d-view 0 0 5) (let ((st (gpu3d-state))) (and (= (table-get st 'spec) 0.5) (= (table-get st 'shininess) 8) (= (caddr (table-get st 'view)) 5) (= (cadddr (table-get st 'fog)) 0.5)))"
+check "этап 7: свет со старой сигнатурой — опц. аргументы сохраняют прежние" "#t" \
+  "$MATL (gpu3d-light 0 1 0 0.2 0.9 0.5 8) (gpu3d-light 0 1 0 0.2 0.9) (gpu3d-light 0 1 0 0.2) (and (= (table-get (gpu3d-state) 'spec) 0.5) (= (table-get (gpu3d-state) 'shininess) 8) (= (table-get (gpu3d-state) 'diffuse) 0.9))"
+
 # — Этап 2: MCP-молотилка — 102 запроса поверх живой игры 3D, все отвечены.
 MCP_IN=$(mktemp); MCP_OUT=$(mktemp)
 trap 'rm -f "$MCP_IN" "$MCP_OUT"' EXIT

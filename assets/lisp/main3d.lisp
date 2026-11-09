@@ -8,6 +8,7 @@
 (load "input.lisp")      ;; системный DSL: состояние клавиш
 (load "render3d.lisp")   ;; системный DSL v0.2: матрицы, камера, меши, draw (+батч v0.3)
 (load "textures.lisp")   ;; системный DSL v0.3: процедурные текстуры, UV, спрайты
+(load "materials.lisp")  ;; системный DSL этапа 7: defmaterial/use-material! (alpha-test, блик, тайлинг)
 (load "editor.lisp")     ;; системный DSL v0.3: мост редактора и MCP (scene/spawn/set)
 (load "game3d.lisp")     ;; уровень 4: 3D-игра «ORBITAL»
 

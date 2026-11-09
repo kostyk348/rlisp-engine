@@ -189,7 +189,12 @@
               (mesh-edges (cdddr idx)))))
 
 ;; ——— отрисовка ———
-(define (draw-mesh mesh model mvp color)
+;; Этап 7: draw-хелперы принимают ОПЦИОНАЛЬНОЕ имя материала
+;; (последним аргументом): (draw-mesh mesh model mvp color [материал]) —
+;; применяется (use-material! имя). Все прежние вызовы (без материала)
+;; работают как раньше. Материалы: assets/lisp/materials.lisp.
+(define (draw-mesh mesh model mvp color . opt)
+  (if (null? opt) #f (use-material! (car opt)))
   (gpu3d-mesh (mesh-pos mesh) (mesh-idx mesh) model mvp
               (car color) (cadr color) (caddr color)))
 
@@ -202,11 +207,16 @@
 (define (inst-row-rpy x y z s yaw pitch roll r g b)
   (list x y z s s s yaw pitch roll r g b))
 
-(define (draw-batch mesh insts mvp)
+(define (draw-batch mesh insts mvp . opt)
+  (if (null? opt) #f (use-material! (car opt)))
   (gpu3d-batch (mesh-pos mesh) (mesh-idx mesh) (f32-from-list insts) mvp))
 
-(define (draw-batch-tex mesh uv tex insts mvp)
-  (gpu3d-batch-tex (mesh-pos mesh) uv (mesh-idx mesh) tex (f32-from-list insts) mvp))
+;; материал переопределяет текстуру: :texture из :texture-слота или tex-аргумент
+(define (draw-batch-tex mesh uv tex insts mvp . opt)
+  (if (null? opt) #f (use-material! (car opt)))
+  (gpu3d-batch-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                   (if (null? opt) tex (or (material-texture (car opt)) tex))
+                   (f32-from-list insts) mvp))
 
 
 ;; wire-объект: (f32-позиции f32-пары-индексов)

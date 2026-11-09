@@ -134,7 +134,12 @@
                 (if (null? opt) 1.0 (car opt))
                 (if (>= (length opt) 2) (cadr opt) (list 1 1 1))))
 
-;; текстурный mesh одним draw call
-(define (draw-mesh-tex mesh uv tex model mvp tint)
-  (gpu3d-mesh-tex (mesh-pos mesh) uv (mesh-idx mesh) tex model mvp
+;; текстурный mesh одним draw call.
+;; Этап 7: опциональное имя материала последним аргументом — применяется
+;; (use-material! имя), текстура материала (:texture) переопределяет tex.
+(define (draw-mesh-tex mesh uv tex model mvp tint . opt)
+  (if (null? opt) #f (use-material! (car opt)))
+  (gpu3d-mesh-tex (mesh-pos mesh) uv (mesh-idx mesh)
+                  (if (null? opt) tex (or (material-texture (car opt)) tex))
+                  model mvp
                   (car tint) (cadr tint) (caddr tint)))
