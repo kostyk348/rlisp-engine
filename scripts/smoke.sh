@@ -64,4 +64,58 @@ check "батч: перспектива-корректный UV (симметр�
 check "editor.lisp: editor-scene без игры — пустой список" "()" \
   '(load "assets/lisp/core.lisp") (load "assets/lisp/editor.lisp") (editor-scene)'
 
+# — Этап 2: cons-пары (Value::Cons рядом с Vec) —
+check "пары: (cons 1 2) — критерий этапа" "(1 . 2)" "(cons 1 2)"
+check "пары: car/cdr точечной пары" "(1 2)" "(list (car (cons 1 2)) (cdr (cons 1 2)))"
+check "пары: печать цепочки поверх Vec-хвоста" "(1 2 3)" "(cons 1 (list 2 3))"
+check "пары: reader читает точечную запись" "#t" "(equal? (quote (a . b)) (cons 'a 'b))"
+check "пары: set-car!/set-cdr!" "(10 20 30)" "(define p (cons 1 2)) (set-car! p 10) (set-cdr! p (list 20 30)) p"
+check "пары: предикаты cons?/pair?/list?" "(#t #t #f #t)" \
+  "(list (cons? (cons 1 2)) (pair? (cons 1 2)) (list? (cons 1 2)) (list? (cons 1 (list 2))))"
+check "пары: length/append/nth поверх цепочек" "(3 (1 2 . 3) 20)" \
+  "(list (length (cons 1 (cons 2 (cons 3 (quote ())))) ) (append (list 1 2) 3) (nth (cons 10 (cons 20 30)) 1))"
+check "пары: apply с Cons-цепочкой" "10" "(apply + 1 2 (cons 3 (list 4)))"
+check "пары: циклическая печать не зависает" "(1 …)" "(define x (cons 1 2)) (set-cdr! x x) x"
+check "пары: map из core поверх цепочек" "(2 4 6)" \
+  "(load \"assets/lisp/core.lisp\") (map (lambda (x) (* x 2)) (cons 1 (cons 2 (cons 3 (quote ())))))"
+check "пары: точечная сигнатура (a . rest)" "(1 (2 3))" "(define (f a . rest) (list a rest)) (f 1 2 3)"
+
+# — Этап 2: GC — критерий «1000 циклов замыканий без роста кучи».
+# Замыкания захватывают друг друга через окружение let; корень снимается,
+# (gc) на границе форм собирает: live возвращается к базовой линии (d < 32).
+GCCYCLE='(define (mk) (let ((a #f) (b #f)) (set! a (lambda () b)) (set! b (lambda () a)) (list a b))) (define (iter n) (if (= n 0) 0 (begin (mk) (iter (- n 1))))) (gc) (define live0 (table-get (gc-stats) (quote live) 0)) (iter 1000) (gc) (define d (- (table-get (gc-stats) (quote live) 0) live0)) (if (< d 32) d (error "GC: циклы замыканий не собираются"))'
+check "GC: 1000 циклов замыканий — куча не растёт" "0" "$GCCYCLE"
+check "GC: счётчики сборок и освобождений растут" "#t" \
+  "(load \"assets/lisp/core.lisp\") (gc) (define c0 (table-get (gc-stats) (quote collections) 0)) (define f0 (table-get (gc-stats) (quote freed) 0)) (dotimes (i 100) (cons i i)) (gc) (and (> (table-get (gc-stats) (quote collections) 0) c0) (> (table-get (gc-stats) (quote freed) 0) f0))"
+
+# — Этап 2: MCP-молотилка — 102 запроса поверх живой игры 3D, все отвечены.
+MCP_IN=$(mktemp); MCP_OUT=$(mktemp)
+trap 'rm -f "$MCP_IN" "$MCP_OUT"' EXIT
+{
+  echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}'
+  for i in $(seq 1 100); do
+    case $((i % 5)) in
+      0) printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"lisp_eval","arguments":{"code":"(+ %s 1)"}}}\n' "$i" "$i" ;;
+      1) printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"status","arguments":{}}}\n' "$i" ;;
+      2) printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"entity_spawn","arguments":{"kind":"grunt","x":1.5,"z":2.5}}}\n' "$i" ;;
+      3) printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"step","arguments":{"frames":1}}}\n' "$i" ;;
+      4) printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"scene_get","arguments":{}}}\n' "$i" ;;
+    esac
+  done
+  echo '{"jsonrpc":"2.0","id":999,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}'
+} > "$MCP_IN"
+if timeout 180 "$BIN" --mcp --script assets/lisp/main3d.lisp < "$MCP_IN" > "$MCP_OUT" 2>/dev/null; then
+  N=$(grep -c '"id"' "$MCP_OUT" || true)
+  E=$(grep -c '"error"' "$MCP_OUT" || true)
+  if [ "$N" -eq 102 ] && [ "$E" -eq 0 ]; then
+    echo "ok   - MCP-молотилка: 102 ответа на 102 запроса поверх живой игры, ошибок протокола: 0"
+  else
+    echo "FAIL - MCP-молотилка: ответов $N/102, ошибок протокола: $E"
+    exit 1
+  fi
+else
+  echo "FAIL - MCP-молотилка: движок упал или не уложился в таймаут"
+  exit 1
+fi
+
 echo "все проверки пройдены"
