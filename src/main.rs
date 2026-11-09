@@ -1085,14 +1085,19 @@ fn run_engine(args: &Args) -> Result<(), String> {
                     .store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
             }
             b.frame.store(frames, std::sync::atomic::Ordering::Relaxed);
-            let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
-            let mut f = b.fps.lock().unwrap();
-            *f = if *f <= 0.0 {
-                inst
-            } else {
-                *f * 0.9 + inst * 0.1
-            };
+            // fps считаем только по реально отрисованным кадрам: в паузе
+            // редактора цикл крутится вхолостую и «fps 12000» — ложь
+            if !editor_skip {
+                let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
+                let mut f = b.fps.lock().unwrap();
+                *f = if *f <= 0.0 {
+                    inst
+                } else {
+                    *f * 0.9 + inst * 0.1
+                };
+            }
             editor::publish_scene(&cell, b);
+            editor::publish_extras(&cell, b);
         }
 
         // удержание реального времени (для demo hot reload по настенным часам)

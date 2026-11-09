@@ -10,12 +10,14 @@
 // API:
 //   GET  /                  — страница редактора (assets/editor/index.html)
 //   GET  /frame.png         — текущий кадр (PNG, кодируется на лету)
-//   GET  /api/state?since=N — кадр, fps, сцена, результаты eval, лог, ассеты
+//   GET  /api/state?since=N — кадр, fps, сцена, результаты eval, лог, ассеты,
+//                            камера+префабы (этап 6: хуки editor-camera/prefab-list)
 //   GET  /api/file?path=    — текст Lisp-файла (только внутри assets/lisp)
 //   POST /api/eval {code}   — исполнить Lisp в живом окружении движка
 //   POST /api/save {path,content} — сохранить файл (движок сам подхватит hot reload)
 //   POST /api/key  {key,down}     — событие клавиатуры в игру
 //   POST /api/ctl  {cmd}          — pause | resume | step | reload
+//   POST /api/save-scene {path}   — сериализовать сцену в Lisp-файл (этап 6)
 
 use crate::interp::{env_get, fmt_value, parse_program, CoreCtx, Gc, GlobalCell, Value};
 use crate::json::Json;
@@ -45,6 +47,10 @@ pub struct Bridge {
     pub log: Mutex<VecDeque<(u64, String)>>,
     pub log_seq: AtomicU64,
     pub assets: Mutex<Vec<String>>,
+    /// Этап 6: камера игры — JSON от хука (editor-camera), «null» если хука нет.
+    pub camera: Mutex<String>,
+    /// Этап 6: префабы игры — JSON от хука (prefab-list), «null» если хука нет.
+    pub prefabs: Mutex<String>,
 }
 
 impl Bridge {
@@ -66,6 +72,8 @@ impl Bridge {
             log: Mutex::new(VecDeque::new()),
             log_seq: AtomicU64::new(0),
             assets: Mutex::new(Vec::new()),
+            camera: Mutex::new("null".into()),
+            prefabs: Mutex::new("null".into()),
         })
     }
 
@@ -256,6 +264,8 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
                 .collect();
             let scene = bridge.scene.lock().unwrap().clone();
             let assets = bridge.assets.lock().unwrap().clone();
+            let camera = bridge.camera.lock().unwrap().clone();
+            let prefabs = bridge.prefabs.lock().unwrap().clone();
             let j = Json::obj(vec![
                 (
                     "frame",
@@ -288,6 +298,9 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
                     "assets",
                     Json::Arr(assets.iter().map(|a| Json::str(a)).collect()),
                 ),
+                // этап 6: камера для гизмо и префабы для drag-n-drop
+                ("camera", Json::Str(camera)),
+                ("prefabs", Json::Str(prefabs)),
             ]);
             http_json(&mut stream, &j);
         }
@@ -380,6 +393,21 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             }
             http_json(&mut stream, &Json::obj(vec![("ok", Json::Bool(true))]));
         }
+        // Этап 6: сохранение сцены — игровая нить сериализует (scene-entities)
+        // в Lisp-файл через (editor-save-scene), файл пишется нативом file-write.
+        ("POST", "/api/save-scene") => {
+            let raw = body_field(&body_str, "path").unwrap_or_else(|| "scene_saved.lisp".into());
+            // только имя файла внутри assets/lisp — без каталогов и traversal
+            let fname = std::path::Path::new(&raw)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "scene_saved.lisp".into());
+            let id = bridge.next_id.fetch_add(1, Ordering::Relaxed);
+            let code = format!("(editor-save-scene \"{}\")", fname);
+            bridge.cmds.lock().unwrap().push((id, code));
+            bridge.log_line(format!("[save-scene #{id}] {fname}"));
+            http_json(&mut stream, &Json::obj(vec![("id", Json::int(id as i64))]));
+        }
         _ => http_err(&mut stream, "404", "нет такого маршрута"),
     }
 }
@@ -466,6 +494,23 @@ pub fn publish_scene(cell: &GlobalCell, bridge: &Arc<Bridge>) {
     }
 }
 
+/// Этап 6: публикация хуков камеры/префабов — (editor-camera) и (prefab-list),
+/// если игра их объявила. Нет хука — в Bridge остаётся «null», редактор честно
+/// прячет гизмо/префабы.
+pub fn publish_extras(cell: &GlobalCell, bridge: &Arc<Bridge>) {
+    let g = *cell.borrow();
+    if let Some(f) = env_get(g, "editor-camera") {
+        if let Ok(v) = crate::interp::apply(&f, &[], 0) {
+            *bridge.camera.lock().unwrap() = crate::json::value_to_json(&v).dump();
+        }
+    }
+    if let Some(f) = env_get(g, "prefab-list") {
+        if let Ok(v) = crate::interp::apply(&f, &[], 0) {
+            *bridge.prefabs.lock().unwrap() = crate::json::value_to_json(&v).dump();
+        }
+    }
+}
+
 /// Игровая нить: разбор команд редактора (eval/keys/ctl-запросы reload).
 /// Возвращает true, если была команда reload.
 pub fn drain_editor_cmds(
@@ -534,4 +579,105 @@ pub fn step_frame(h: &EngineHandle, dt: f64) -> Result<(), String> {
     // Этап 2: граница форм MCP-цикла — авто-сборка GC
     crate::gc::maybe_collect(&[g], &[]);
     Ok(())
+}
+
+// ——————————————————————————— тесты этапа 6 ———————————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hal::OutputMode;
+    use std::path::PathBuf;
+
+    /// Этап 6: round-trip сохранения сцены. Заглушка игры даёт 3 сущности
+    /// (2 врага + игрок, пуля — переходящая), (editor-save-scene) сериализует
+    /// их в Lisp-файл, читатель парсит файл назад, (load) восстанавливает —
+    /// те же сущности и позиции.
+    #[test]
+    fn save_scene_roundtrip() {
+        let halrc = Rc::new(RefCell::new(crate::hal::Hal::new(OutputMode::Silent, 8, 8)));
+        let (ctx, cell) = crate::make_context(halrc, PathBuf::from("."));
+        let root = PathBuf::from(".");
+        crate::interp::load_file(&root.join("assets/lisp/core.lisp"), &ctx).unwrap();
+        crate::interp::load_file(&root.join("assets/lisp/editor.lisp"), &ctx).unwrap();
+
+        // заглушки: mcp-spawn-at пишет в *spawned*, игрок — обычная таблица
+        eval_string(
+            "(define *spawned* '())\n\
+             (define *stub-player* (make-table))\n\
+             (define (game-spawn-at kind x z)\n\
+               (set! *spawned* (cons (list kind x z) *spawned*))\n\
+               (length *spawned*))",
+            &cell,
+        )
+        .unwrap();
+        // сцена: 2 врага + игрок + переходящая пуля (пуля не сериализуется)
+        eval_string(
+            "(define (scene-entities)\n\
+               (list (obj 'id 0 'type \"enemy\" 'name \"brute\" 'ref \"(game-entity 0)\" 'x 11.5 'z -3.0 'hp 3)\n\
+                     (obj 'id 1 'type \"enemy\" 'name \"grunt\" 'ref \"(game-entity 1)\" 'x 4.25 'z 7.5 'hp 1)\n\
+                     (obj 'id 0 'type \"player\" 'name \"Игрок\" 'ref \"*stub-player*\" 'x 0.0 'z 0.0)\n\
+                     (obj 'type \"bullet\" 'name \"Пуля\" 'x 1.0 'z 1.0)))",
+            &cell,
+        )
+        .unwrap();
+
+        // сериализация во временный файл: 3 формы (2 врага + игрок)
+        let path = std::env::temp_dir().join("rlisp_scene_roundtrip.lisp");
+        let res = eval_string(
+            &format!("(editor-save-scene \"{}\")", path.display()),
+            &cell,
+        )
+        .unwrap();
+        assert_eq!(fmt_value(&res), "3");
+
+        // файл парсится назад читателем — формы восстановления с позициями
+        let src = std::fs::read_to_string(&path).unwrap();
+        let prog = parse_program(&src).unwrap();
+        assert_eq!(prog.len(), 3);
+        assert_eq!(
+            fmt_value(&prog[0]),
+            "(mcp-spawn-at (quote brute) 11.5 -3.0)"
+        );
+        assert_eq!(fmt_value(&prog[1]), "(mcp-spawn-at (quote grunt) 4.25 7.5)");
+        assert_eq!(
+            fmt_value(&prog[2]),
+            "(begin (table-set! *stub-player* (quote x) 0.0) (table-set! *stub-player* (quote z) 0.0))"
+        );
+
+        // round-trip: (load) файла в живом окружении → те же сущности и позиции
+        eval_string("(set! *spawned* '())", &cell).unwrap();
+        eval_string(&format!("(load \"{}\")", path.display()), &cell).unwrap();
+        let spawned = eval_string("*spawned*", &cell).unwrap();
+        assert_eq!(fmt_value(&spawned), "((grunt 4.25 7.5) (brute 11.5 -3.0))");
+        let px = eval_string("(table-get *stub-player* 'x 99)", &cell).unwrap();
+        assert_eq!(fmt_value(&px), "0.0");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Хуки камеры/префабов публикуются только если игра их объявила:
+    /// нет хуков — в Bridge остаётся «null», редактор прячет гизмо/префабы.
+    #[test]
+    fn publish_extras_missing_hooks_stay_null() {
+        let halrc = Rc::new(RefCell::new(crate::hal::Hal::new(OutputMode::Silent, 8, 8)));
+        let (_ctx, cell) = crate::make_context(halrc, PathBuf::from("."));
+        let bridge = Bridge::new();
+        // убедимся, что в пустом окружении хуков нет
+        assert!(env_get(*cell.borrow(), "editor-camera").is_none());
+        publish_extras(&cell, &bridge);
+        assert_eq!(*bridge.camera.lock().unwrap(), "null");
+        assert_eq!(*bridge.prefabs.lock().unwrap(), "null");
+    }
+
+    /// /api/save-scene не пускает пути наружу: остаётся только имя файла.
+    #[test]
+    fn save_scene_path_is_sanitized() {
+        // проверяем логику обрезки пути, как в обработчике
+        let raw = "../../etc/passwd.lisp";
+        let fname = std::path::Path::new(raw)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap();
+        assert_eq!(fname, "passwd.lisp");
+    }
 }

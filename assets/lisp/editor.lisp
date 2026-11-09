@@ -42,3 +42,46 @@
   (let ((t (make-table)))
     (set-kv! t kvs)
     t))
+
+;; ——— этап 6: сохранение сцены в Lisp-файл ———
+;; Живая сцена (scene-entities) → формы восстановления:
+;;   enemy / pylon → (mcp-spawn-at 'kind x z);
+;;   player        → (begin (table-set! REF 'x X) (table-set! REF 'z Z));
+;;   прочее (пули, взрывы) — переходящее, не сериализуется.
+;; Вызов: (editor-save-scene "scene_saved.lisp") — пишет нативом file-write.
+;; Возврат в игру: (load "scene_saved.lisp") через REPL редактора.
+
+;; соединить строки через разделитель (dialect без named let — рекурсия)
+(define (str-join sep lst)
+  (if (null? lst) ""
+      (if (null? (cdr lst))
+          (car lst)
+          (string-append (car lst) sep (str-join sep (cdr lst))))))
+
+;; сцена → одна форма восстановления (или "" для переходящих сущностей)
+(define (scene->form e)
+  (let ((t (table-get e 'type "?"))
+        (x (number->string (table-get e 'x 0.0)))
+        (z (number->string (table-get e 'z 0.0))))
+    (if (string=? t "player")
+        (string-append "(begin (table-set! " (table-get e 'ref "*player*")
+                       " 'x " x ") (table-set! " (table-get e 'ref "*player*")
+                       " 'z " z "))")
+        (if (string=? t "pylon")
+            (string-append "(mcp-spawn-at 'pylon " x " " z ")")
+            (if (string=? t "enemy")
+                (string-append "(mcp-spawn-at '"
+                               (table-get e 'name "grunt") " " x " " z ")")
+                "")))))
+
+(define (editor-save-scene fname)
+  (if (defined? 'scene-entities)
+      (let* ((forms (map scene->form (editor-scene)))
+             (kept (filter (lambda (s) (> (string-length s) 0)) forms))
+             (src (string-append
+                   ";; scene_saved.lisp — сцена, сохранённая редактором rlisp-engine.\n"
+                   ";; Восстановление в живой игре: (load \"scene_saved.lisp\") через REPL.\n"
+                   (str-join "\n" kept))))
+        (file-write fname src)
+        (length kept))
+      (error "в этой игре нет scene-entities — сохранять нечего")))

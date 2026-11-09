@@ -16,6 +16,7 @@
 (defpersistent *wave* 1)
 (defpersistent *player* (make-table))
 (defpersistent *enemies* (make-table))
+(defpersistent *pylons* (make-table))   ; этап 6: пропсы, спавнятся редактором
 (defpersistent *bullets* '())
 (defpersistent *fx* '())
 (defpersistent *game-over* #f)
@@ -96,6 +97,17 @@
 
 (define (enemy-color kind)
   (if (eq? kind 'brute) *brute-color* *grunt-color*))
+
+;; ——— пилоны (этап 6): статичные пропсы для drag-n-drop редактора ———
+(define (spawn-pylon x z)
+  (let ((id *next-id*))
+    (set! *next-id* (+ id 1))
+    (let ((p (make-table)))
+      (table-set! p 'x x)
+      (table-set! p 'z z)
+      (table-set! p 'kind 'pylon)
+      (table-set! *pylons* id p))
+    id))
 
 ;; ——— стрельба: автоприцел по ближайшему врагу ———
 (define (nearest-enemy-3d)
@@ -309,6 +321,19 @@
   (append (pillar-row (list -48 -48)) (pillar-row (list 48 -48))
           (pillar-row (list -48 48)) (pillar-row (list 48 48))))
 
+;; редакторские пилоны (этап 6): ряд инстанса — 12 f32, куб вытянут вверх
+(define (pylon-insts)
+  (define (go entries acc)
+    (if (null? entries) acc
+        (let* ((entry (car entries))
+               (p (cadr entry)))
+          (go (cdr entries)
+              (append acc (list (table-get p 'x 0.0) 5.0 (table-get p 'z 0.0)
+                                2.2 10.0 2.2 0.0 0.0 0.0
+                                (car *pillar-color*) (cadr *pillar-color*)
+                                (caddr *pillar-color*)))))))
+  (go (table-entries *pylons*) '()))
+
 (define (draw-scene t)
   (let* ((pxv (px 0))
          (pzv (table-get *player* 'z 0.0))
@@ -325,6 +350,8 @@
                mvp *torus-color*)
     ;; угловые пилоны — БАТЧ: 4 куба одним draw call (v0.3)
     (draw-batch *mesh-pillar* *pillar-insts* mvp)
+    ;; редакторские пилоны (этап 6) — тем же батчем
+    (if (null? (pylon-insts)) #f (draw-batch *mesh-pillar* (pylon-insts) mvp))
     ;; игрок — вращающийся куб с текстурой «панель» + тинт
     (draw-mesh-tex *mesh-cube* *uv-cube* *tex-panel*
                    (mat4-mul (mat4-mul (mat-translate pxv 1.4 pzv)
@@ -369,22 +396,29 @@
      (draw-hud)
      (if *game-over* (draw-game-over) #f))))
 
-;; ——— мост редактора/MCP (v0.3): сцена и операции над сущностями ———
+;; ——— мост редактора/MCP (v0.3 + этап 6): сцена и операции над сущностями ———
+;; сущность по id: враг или пилон (id общие, из одного счётчика *next-id*)
 (define (game-entity id)
   (let ((t (table-get *enemies* (number->string id) #f)))
-    (if t t (error (string-append "нет врага #" (number->string id))))))
+    (if t t
+        (let ((p (table-get *pylons* (number->string id) #f)))
+          (if p p
+              (error (string-append "нет сущности #" (number->string id))))))))
 
 (define (game-remove! id)
-  (table-remove! *enemies* (number->string id)))
+  (table-remove! *enemies* (number->string id))
+  (table-remove! *pylons* (number->string id)))
 
 (define (game-spawn kind) (spawn-enemy kind))
 
 (define (game-spawn-at kind x z)
-  (let ((id (spawn-enemy kind)))
-    (let ((e (game-entity id)))
-      (table-set! e 'x x)
-      (table-set! e 'z z))
-    id))
+  (if (eq? kind 'pylon)
+      (spawn-pylon x z)
+      (let ((id (spawn-enemy kind)))
+        (let ((e (game-entity id)))
+          (table-set! e 'x x)
+          (table-set! e 'z z))
+        id)))
 
 ;; сцена для иерархии редактора: таблицы → JSON-объекты (editor.lisp: obj)
 (define (scene-entities)
@@ -399,6 +433,12 @@
                  'x (table-get e 'x 0.0) 'z (table-get e 'z 0.0)
                  'hp (table-get e 'hp 1))))
         (table-entries *enemies*))
+   (map (lambda (entry)
+          (let* ((id (string->number (car entry))) (p (cadr entry)))
+            (obj 'id id 'type "pylon" 'name "Пилон"
+                 'ref (string-append "(game-entity " (number->string id) ")")
+                 'x (table-get p 'x 0.0) 'z (table-get p 'z 0.0))))
+        (table-entries *pylons*))
    (map (lambda (b)
           (obj 'type "bullet" 'name "Пуля"
                'x (table-get b 'x 0.0) 'z (table-get b 'z 0.0)))
@@ -407,3 +447,19 @@
           (obj 'type "fx" 'name "Взрыв"
                'x (table-get fx 'x 0.0) 'z (table-get fx 'z 0.0)))
         *fx*)))
+
+;; ——— этап 6: камера для гизмо редактора (та же, что в draw-scene) ———
+(define (editor-camera)
+  (let ((pxv (px 0))
+        (pzv (table-get *player* 'z 0.0))
+        (t (time3d)))
+    (obj 'eye (list (+ pxv (* 4 (sin (* t 0.25)))) 22 (+ pzv 27))
+         'target (list pxv 0 (- pzv 5))
+         'fov 1.0
+         'w *screen-w* 'h *screen-h*)))
+
+;; ——— этап 6: префабы для drag-n-drop редактора ———
+(define (prefab-list)
+  (list (obj 'kind "grunt" 'name "Грант" 'hp 1)
+        (obj 'kind "brute" 'name "Брут" 'hp 3)
+        (obj 'kind "pylon" 'name "Пилон")))

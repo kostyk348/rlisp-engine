@@ -1845,6 +1845,13 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
             _ => Err("string-length: нужна строка".into()),
         }
     });
+    def(env, "string=?", |args| {
+        need(args, 2)?;
+        match (&args[0], &args[1]) {
+            (Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a == b)),
+            _ => Err("string=?: нужны две строки".into()),
+        }
+    });
     def(env, "string-at", |args| {
         need(args, 2)?;
         match &args[0] {
