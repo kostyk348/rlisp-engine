@@ -2,6 +2,23 @@
 
 Формат — Keep a Changelog; версии семантические.
 
+## [Unreleased]
+### Этап 8: демо «Остров» (ветка stage8/island)
+- glTF-пайплайн: нативы json-parse, base64-decode (RFC 4648 + data-URI),
+  file-read-bytes, texture-load-png (ноль зависимостей, юнит-тесты);
+  загрузчик assets/lisp/load-gltf.lisp (уровень 3) — подмножество glTF 2.0
+  ASCII: сцены/узлы (matrix/TRS), POSITION/NORMAL/TEXCOORD_0, индексы
+  FLOAT/USHORT/UINT/UBYTE, bufferView+byteStride, буферы .bin/data-URI,
+  PNG-текстуры файл/data-URI, IEEE-754 на Lisp, кэш по пути; fixture
+  assets/tests/gltf + 11 smoke-проверок; CC0-модели WaterBottle и Lantern
+  (KhronosGroup/glTF-Sample-Assets, лицензии проверены по LICENSE.md)
+- сцена assets/lisp/island.lisp + main_island.lisp: вода с волнами (3
+  синуса, обновление каждый 2-й кадр), высотное поле острова, 16 деревьев
+  (батч стволов + кроны alpha-test 0.5), камни-батч, тёплый свет, туман,
+  орбита камеры, честный FPS-замер (headless 320x240 --fast: 45.9 fps)
+- демо-артефакты: demo/island.gif, island_filmstrip.png, стиллы,
+  run_island.log; docs/credits.md — происхождение ассетов
+
 ## [Unreleased] — 0.4.0
 
 ### Добавлено (этап 7 роадмапа: «Графика v2 — материалы»)

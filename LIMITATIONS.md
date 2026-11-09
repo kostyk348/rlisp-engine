@@ -112,3 +112,21 @@ JIT — это copy-and-patch для **горячих числовых лямб�
   (cfg `has_avx512` из build.rs), на 1.83 честный fallback на AVX2.
 - **PNG-декодер свой**: полный inflate (stored/fixed/dynamic Huffman), но без
   interlace-форматов Adam7; 16-битные каналы даунсемплятся до 8 бит.
+
+
+## Этап 8 «Остров» (glTF-пайплайн)
+
+- Поддержано ПОДМНОЖЕСТВО glTF 2.0 (ASCII): сцены/узлы с matrix/TRS,
+  POSITION/NORMAL/TEXCOORD_0, индексы FLOAT/USHORT/UINT/UBYTE,
+  bufferView+byteStride, буферы .bin или data-URI base64, PNG-текстуры
+  (файл или data-URI), материалы — только baseColorFactor/baseColorTexture.
+- НЕТ: .glb-контейнер, skinning/анимации, камеры/света glTF, PBR-текстур,
+  изображений из bufferView.
+- Нормали читаются, но шейдинг движка FLAT (per-face) — per-vertex N
+  конвейер не использует.
+- Alpha-test есть, alpha-BLENDING нет: вода непрозрачна. Туман opaque-only.
+- Волны воды обновляются каждый 2-й кадр — сознательный компромисс: полный
+  цикл вершин на Lisp каждый кадр съедал бюджет (с компромиссом headless
+  320x240 --fast ≈ 46 fps).
+- Текстуры сцены процедурные: ambientcg.com из песочницы сборки
+  недоступен, лицензию зеркала проверить не удалось (docs/credits.md).

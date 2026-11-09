@@ -419,3 +419,15 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
    символов, pshufb-классификация.
 6. JIT для eval (ТЗ §10.1) — числовые ядра сделаны в этапе 3 (49×);
    расширение покрытия — следующий шаг.
+
+## Демо: Остров (этап 8, ветка stage8/island)
+
+Сцена assets/lisp/island.lisp — вода с волнами (3 синуса, материал с
+бликом), высотное поле острова, 16 деревьев с alpha-test кронами, камни,
+тёплый свет и туман цвета неба, glTF-модели WaterBottle и Lantern (CC0-1.0,
+KhronosGroup/glTF-Sample-Assets). Загрузчик моделей — load-gltf.lisp
+(подмножество glTF 2.0 ASCII; нативы json-parse / base64-decode /
+file-read-bytes / texture-load-png, ноль зависимостей). Headless-замер:
+45.9 fps на 320x240 (--fast). Артефакты: demo/island.gif,
+demo/island_filmstrip.png. Происхождение ассетов и лицензии —
+docs/credits.md, ограничения — LIMITATIONS.md.

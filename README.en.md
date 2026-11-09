@@ -422,3 +422,15 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
    interning, pshufb byte classification.
 6. JIT for eval (spec §10.1) — numeric kernels done in stage 3 (49×);
    extending coverage is the next step.
+
+## Demo: Island (stage 8, branch stage8/island)
+
+assets/lisp/island.lisp — animated water (3 sine waves, specular material),
+radial heightfield island, 16 trees with alpha-tested canopies, rocks, warm
+light and sky-colored fog, plus glTF models WaterBottle and Lantern
+(CC0-1.0, KhronosGroup/glTF-Sample-Assets). The model pipeline is
+load-gltf.lisp (a subset of glTF 2.0 ASCII on top of zero-dependency
+natives json-parse / base64-decode / file-read-bytes / texture-load-png).
+Headless measurement: 45.9 fps at 320x240 (--fast). Artifacts:
+demo/island.gif, demo/island_filmstrip.png. Asset provenance and licenses:
+docs/credits.md; subset limitations: LIMITATIONS.md.
