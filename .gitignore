@@ -8,3 +8,4 @@ demo/frames3d/
 # Служебное
 *.log.tmp
 __pycache__/
+/core

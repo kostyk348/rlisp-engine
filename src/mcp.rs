@@ -6,6 +6,20 @@
 // Запуск: rlisp-engine --mcp --script assets/lisp/main3d.lisp
 // Протокольная обвязка — Rust (как png.rs: байты, не семантика); инструменты
 // вызывают Lisp (editor.lisp/game3d.lisp) — сцена и сущности живут на Lisp.
+//
+// Этап 2 — потоки: протокол обслуживают ФОНОВЫЕ потоки, интерпретатор
+// остаётся однопоточным владельцем Lisp-состояния:
+//
+//   поток-reader (stdin)                игровая нить (владелец interp)     поток-writer (stdout)
+//   ────────────────────                ──────────────────────────────     ─────────────────────
+//   строка → JSON → McpRequest  ─mpsc▶  mcp_engine_loop:                   ◀mpsc─ строка ответа
+//   (parse-ошибка → ответ сразу)        между кадрами разбирает очередь,   println + flush
+//                                       инструменты применяет здесь же
+//
+// Потоки общаются ТОЛЬКО каналами: Values и Hal никогда не покидают игровую
+// нить, блокировок на состояниях интерпретатора нет — гонок по построению.
+// --mcp поведение совместимо: тот же протокол, те же ответы; при пустой
+// очереди движок просто ждёт следующий запрос (recv — «пауза между кадрами»).
 
 use crate::editor::{eval_string, step_frame, EngineHandle};
 use crate::interp::{env_get, fmt_value, load_file, GlobalCell};
@@ -14,6 +28,7 @@ use crate::png;
 use std::cell::RefCell;
 use std::io::{BufRead, Write};
 use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender};
 
 fn b64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -39,12 +54,6 @@ fn b64(data: &[u8]) -> String {
         });
     }
     out
-}
-
-fn out_line(s: &str) {
-    let mut o = std::io::stdout().lock();
-    let _ = writeln!(o, "{}", s);
-    let _ = o.flush();
 }
 
 fn tool_def(name: &str, desc: &str, props: Vec<(&str, &str)>) -> Json {
@@ -92,6 +101,15 @@ fn err_content(s: &str) -> Json {
         ),
         ("isError", Json::Bool(true)),
     ])
+}
+
+/// Запрос, разобранный reader-потоком: только данные протокола, никакого
+/// доступа к интерпретатору. Send по построению (Json — owned-данные).
+pub struct McpRequest {
+    pub id: Json,
+    pub method: String,
+    pub params: Json,
+    pub is_notification: bool,
 }
 
 pub struct McpState {
@@ -338,6 +356,97 @@ fn tools_list() -> Vec<Json> {
     ]
 }
 
+fn resp_line(id: Json, result: Json) -> String {
+    Json::obj(vec![
+        ("jsonrpc", Json::str("2.0")),
+        ("id", id),
+        ("result", result),
+    ])
+    .dump()
+}
+
+fn err_line(id: Json, code: i64, message: &str) -> String {
+    Json::obj(vec![
+        ("jsonrpc", Json::str("2.0")),
+        ("id", id),
+        (
+            "error",
+            Json::obj(vec![
+                ("code", Json::int(code)),
+                ("message", Json::str(message)),
+            ]),
+        ),
+    ])
+    .dump()
+}
+
+/// Обработать один запрос на игровой нити (владелец интерпретатора).
+/// Ответ — строка JSON в канал writer-потока.
+fn handle_request(state: &mut McpState, req: McpRequest, resp: &Sender<String>) {
+    let McpRequest {
+        id,
+        method,
+        params,
+        is_notification,
+    } = req;
+    let line = match method.as_str() {
+        "initialize" => resp_line(
+            id,
+            Json::obj(vec![
+                ("protocolVersion", Json::str("2024-11-05")),
+                (
+                    "capabilities",
+                    Json::obj(vec![("tools", Json::obj(vec![]))]),
+                ),
+                (
+                    "serverInfo",
+                    Json::obj(vec![
+                        ("name", Json::str("rlisp-engine")),
+                        ("version", Json::str("0.3.0")),
+                        ("title", Json::str("RLISP Game Engine — Lisp-машина")),
+                    ]),
+                ),
+            ]),
+        ),
+        "notifications/initialized" | "notifications/cancelled" => return,
+        "tools/list" => resp_line(id, Json::obj(vec![("tools", Json::Arr(tools_list()))])),
+        "tools/call" => {
+            let name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(Json::obj(vec![]));
+            let result = call_tool(state, &name, &args);
+            resp_line(id, result)
+        }
+        "ping" => resp_line(id, Json::obj(vec![])),
+        other => {
+            if is_notification {
+                return;
+            }
+            err_line(id, -32601, &format!("метод не найден: {}", other))
+        }
+    };
+    let _ = resp.send(line);
+}
+
+/// Игровой цикл MCP-режима: между «кадрами» разбирает очередь запросов.
+/// Единственный владелец интерпретатора (Lisp-состояния) — эта нить.
+/// Когда reader'ы закрыли канал (EOF stdio) — цикл завершается.
+pub fn mcp_engine_loop(
+    state: &mut McpState,
+    req_rx: Receiver<McpRequest>,
+    resp_tx: Sender<String>,
+) {
+    for req in req_rx {
+        handle_request(state, req, &resp_tx);
+    }
+}
+
 pub fn run_mcp(script: &std::path::Path, fps: f64) -> Result<(), String> {
     crate::interp::set_mcp_quiet(true);
     let halrc = Rc::new(RefCell::new(crate::hal::Hal::new(
@@ -360,139 +469,223 @@ pub fn run_mcp(script: &std::path::Path, fps: f64) -> Result<(), String> {
     };
 
     eprintln!(
-        "[mcp] rlisp-engine MCP готов; инструментов: {} (stdio, JSON-RPC 2.0)",
+        "[mcp] rlisp-engine MCP готов; инструментов: {} (stdio, JSON-RPC 2.0, reader/writer в фоне)",
         tools_list().len()
     );
 
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        if line.trim().is_empty() {
-            continue;
+    // каналы: запросы reader → игровая нить; ответы игровая нить → writer
+    let (req_tx, req_rx) = std::sync::mpsc::channel::<McpRequest>();
+    let (resp_tx, resp_rx) = std::sync::mpsc::channel::<String>();
+
+    // writer: единственный писатель stdout — строки не перемешиваются
+    let writer = std::thread::spawn(move || {
+        let stdout = std::io::stdout();
+        for line in resp_rx {
+            let mut o = stdout.lock();
+            let _ = writeln!(o, "{}", line);
+            let _ = o.flush();
         }
-        let msg = match crate::json::parse(&line) {
-            Ok(m) => m,
-            Err(e) => {
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", Json::Null),
-                        (
-                            "error",
-                            Json::obj(vec![
-                                ("code", Json::int(-32700)),
-                                ("message", Json::str(&format!("parse error: {}", e))),
-                            ]),
-                        ),
-                    ])
-                    .dump(),
-                );
+    });
+
+    // reader: разбирает строки stdin → McpRequest в канал; parse-ошибки
+    // отвечаются сразу (данные протокола, интерпретатор не нужен)
+    let rtx = resp_tx.clone();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.trim().is_empty() {
                 continue;
             }
-        };
-        let method = msg
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let id = msg.get("id").cloned().unwrap_or(Json::Null);
-        let is_notification = matches!(msg.get("id"), None | Some(Json::Null));
-
-        match method.as_str() {
-            "initialize" => {
-                let result = Json::obj(vec![
-                    ("protocolVersion", Json::str("2024-11-05")),
-                    (
-                        "capabilities",
-                        Json::obj(vec![("tools", Json::obj(vec![]))]),
-                    ),
-                    (
-                        "serverInfo",
-                        Json::obj(vec![
-                            ("name", Json::str("rlisp-engine")),
-                            ("version", Json::str("0.3.0")),
-                            ("title", Json::str("RLISP Game Engine — Lisp-машина")),
-                        ]),
-                    ),
-                ]);
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", id),
-                        ("result", result),
-                    ])
-                    .dump(),
-                );
-            }
-            "notifications/initialized" | "notifications/cancelled" => {}
-            "tools/list" => {
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", id),
-                        (
-                            "result",
-                            Json::obj(vec![("tools", Json::Arr(tools_list()))]),
-                        ),
-                    ])
-                    .dump(),
-                );
-            }
-            "tools/call" => {
-                let params = msg.get("params").cloned().unwrap_or(Json::Null);
-                let name = params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let args = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(Json::obj(vec![]));
-                let result = call_tool(&mut state, &name, &args);
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", id),
-                        ("result", result),
-                    ])
-                    .dump(),
-                );
-            }
-            "ping" => {
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", id),
-                        ("result", Json::obj(vec![])),
-                    ])
-                    .dump(),
-                );
-            }
-            other => {
-                if is_notification {
-                    continue;
+            match crate::json::parse(&line) {
+                Ok(msg) => {
+                    let method = msg
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let id = msg.get("id").cloned().unwrap_or(Json::Null);
+                    let is_notification = matches!(msg.get("id"), None | Some(Json::Null));
+                    let params = msg.get("params").cloned().unwrap_or(Json::Null);
+                    if req_tx
+                        .send(McpRequest {
+                            id,
+                            method,
+                            params,
+                            is_notification,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
-                out_line(
-                    &Json::obj(vec![
-                        ("jsonrpc", Json::str("2.0")),
-                        ("id", id),
-                        (
-                            "error",
-                            Json::obj(vec![
-                                ("code", Json::int(-32601)),
-                                ("message", Json::str(&format!("метод не найден: {}", other))),
-                            ]),
-                        ),
-                    ])
-                    .dump(),
-                );
+                Err(e) => {
+                    if rtx
+                        .send(err_line(Json::Null, -32700, &format!("parse error: {}", e)))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             }
         }
-    }
+        // EOF stdio: канал запросов закрывается — игровой цикл завершается
+    });
+
+    mcp_engine_loop(&mut state, req_rx, resp_tx.clone());
+
+    // игровая нить закончилась: закрываем ответы → writer дописывает и выходит
+    drop(resp_tx);
+    let _ = writer.join();
     eprintln!("[mcp] сеанс завершён, кадров выполнено: {}", state.frames);
     Ok(())
+}
+
+// ——————————————————————————— тесты этапа 2 ———————————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::EngineHandle;
+    use std::rc::Rc;
+
+    /// Игровой код загружается/шагает с рекурсией eval; в тестовом потоке
+    /// стек по умолчанию 2 МБ (у главной нити — 8 МБ) — даём большой стек.
+    fn with_big_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(f)
+            .expect("тестовый поток")
+            .join()
+            .expect("тест не паниковал");
+    }
+
+    fn state_with_game() -> McpState {
+        let halrc = Rc::new(RefCell::new(crate::hal::Hal::new(
+            crate::hal::OutputMode::Silent,
+            320,
+            240,
+        )));
+        let (ctx, cell) =
+            crate::make_context(halrc.clone(), std::path::PathBuf::from("assets/lisp"));
+        load_file(std::path::Path::new("assets/lisp/main3d.lisp"), &ctx)
+            .expect("игра 3D загружается");
+        McpState {
+            h: EngineHandle { ctx, cell, halrc },
+            frames: 0,
+            fps: 0.0,
+            dt: 1.0 / 30.0,
+        }
+    }
+
+    /// Критерий этапа 2 «MCP hammer»: ≥100 запросов (spawn/entities/eval/
+    /// step/screenshot) приходят от фонового потока, пока игровой цикл
+    /// работает — ни паники, ни краха, на каждый запрос пришёл ответ.
+    #[test]
+    fn mcp_hammer_120_запросов_без_падения() {
+        with_big_stack(|| {
+            crate::interp::set_mcp_quiet(true);
+            let mut state = state_with_game();
+            let (req_tx, req_rx) = std::sync::mpsc::channel::<McpRequest>();
+            let (resp_tx, resp_rx) = std::sync::mpsc::channel::<String>();
+
+            // «ИИ-агент»: сыплет запросы из фонового потока (модель stdio-клиента)
+            let n: i64 = 120;
+            let agent = std::thread::spawn(move || {
+                for i in 0..n {
+                    let (tool, args) = match i % 6 {
+                        0 => ("status", Json::obj(vec![])),
+                        1 => ("lisp_eval", Json::obj(vec![("code", Json::str("(+ 1 2)"))])),
+                        2 => (
+                            "entity_spawn",
+                            Json::obj(vec![
+                                ("kind", Json::str("grunt")),
+                                ("x", Json::num(1.5)),
+                                ("z", Json::num(2.5)),
+                            ]),
+                        ),
+                        3 => ("step", Json::obj(vec![("frames", Json::int(2))])),
+                        4 => ("screenshot", Json::obj(vec![])),
+                        _ => ("scene_get", Json::obj(vec![])),
+                    };
+                    // настоящий конверт JSON-RPC: tools/call { name, arguments }
+                    let params = Json::obj(vec![("name", Json::str(tool)), ("arguments", args)]);
+                    req_tx
+                        .send(McpRequest {
+                            id: Json::int(i),
+                            method: "tools/call".into(),
+                            params,
+                            is_notification: false,
+                        })
+                        .unwrap();
+                }
+                // конец потока = EOF: канал закрывается, игровой цикл завершится
+            });
+
+            mcp_engine_loop(&mut state, req_rx, resp_tx);
+            agent.join().expect("агент не паниковал");
+
+            // на КАЖДЫЙ запрос пришёл ровно один ответ; ответы — валидный JSON
+            let mut answered = 0;
+            let mut errors = 0;
+            for line in resp_rx {
+                answered += 1;
+                let m = crate::json::parse(&line).expect("ответ — не JSON");
+                assert!(
+                    m.get("result").is_some() || m.get("error").is_some(),
+                    "ответ без result/error: {}",
+                    line
+                );
+                if m.get("error").is_some() {
+                    errors += 1;
+                }
+            }
+            assert_eq!(answered, n, "не на все запросы пришли ответы");
+            assert_eq!(errors, 0, "есть ошибки уровня протокола");
+            assert!(state.frames > 0, "step-инструмент не двинул симуляцию");
+        });
+    }
+
+    /// Совместимость протокола: initialize/tools/list/ping отвечают как раньше.
+    #[test]
+    fn mcp_initialize_tools_ping() {
+        with_big_stack(|| {
+            crate::interp::set_mcp_quiet(true);
+            let mut state = state_with_game();
+            let (req_tx, req_rx) = std::sync::mpsc::channel::<McpRequest>();
+            let (resp_tx, resp_rx) = std::sync::mpsc::channel::<String>();
+            for (method, id) in [("initialize", 1), ("tools/list", 2), ("ping", 3)] {
+                req_tx
+                    .send(McpRequest {
+                        id: Json::int(id),
+                        method: method.into(),
+                        params: Json::obj(vec![]),
+                        is_notification: false,
+                    })
+                    .unwrap();
+            }
+            drop(req_tx);
+            mcp_engine_loop(&mut state, req_rx, resp_tx);
+            let lines: Vec<String> = resp_rx.iter().collect();
+            assert_eq!(lines.len(), 3);
+            let init = crate::json::parse(&lines[0]).unwrap();
+            assert_eq!(
+                init.get("result")
+                    .and_then(|r| r.get("protocolVersion"))
+                    .and_then(|v| v.as_str()),
+                Some("2024-11-05")
+            );
+            let tools = crate::json::parse(&lines[1]).unwrap();
+            assert_eq!(
+                tools
+                    .get("result")
+                    .and_then(|r| r.get("tools"))
+                    .map(|t| matches!(t, Json::Arr(xs) if xs.len() == 10)),
+                Some(true)
+            );
+        });
+    }
 }
