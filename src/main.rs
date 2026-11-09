@@ -102,7 +102,7 @@ rlisp-engine — игровой движок как Lisp-машина (Rust = т
   --fps F         шаг симуляции (по умолчанию 30)
   --fast          без привязки к реальному времени
   --width W --height H   стартовый размер экрана
-  --bench         бенчмарк SIMD-слоя + 2D-кадра (Rust HAL vs Lisp-уровень)
+  --bench         бенчмарк SIMD-слоя + 2D-кадра + 3D-шейдинга (этап 7)
   --bench-parse   бенчмарк токенизатора/парсера: старый посимвольный reader vs
                   новый SIMD-сканер (src/simd.rs) на реальном корпусе
                   assets/lisp/*.lisp; оба пути обязаны давать одинаковые AST
@@ -510,7 +510,9 @@ fn run_bench(args: &Args) -> Result<(), String> {
             eprintln!("[ошибка бенча JIT] {}", e);
         }
     }
-    bench_2d(args)
+    bench_2d(args)?;
+    bench_3d_shading()?;
+    Ok(())
 }
 
 // ——— бенчмарк 2D-кадра (этап 1): программный растр vs wgpu за фасадом HAL ———
@@ -697,6 +699,218 @@ fn bench_2d(args: &Args) -> Result<(), String> {
     println!();
     println!("честная метка этапа 1: сравнение «wgpu кратно быстрее» требует GPU-железа;");
     println!("в headless/CI без адаптера wgpu-путь откатывается на программный растр.");
+    Ok(())
+}
+
+// ——— бенчмарк 3D-шейдинга (этап 7): стоимость материалов в программном
+// конвейере. Сцена ОДНА для всех конфигураций — дельта честная ———
+
+struct Сцена3d {
+    pos: Vec<f32>,
+    uv: Vec<f32>,
+    idx: Vec<f32>,
+    insts: Vec<f32>,
+    mvp: [f32; 16],
+}
+
+fn mat_lookat(eye: [f32; 3], target: [f32; 3]) -> [f32; 16] {
+    let f = {
+        let d = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-9);
+        [d[0] / l, d[1] / l, d[2] / l]
+    };
+    let up = [0.0f32, 1.0, 0.0];
+    let r = {
+        let c = [
+            f[1] * up[2] - f[2] * up[1],
+            f[2] * up[0] - f[0] * up[2],
+            f[0] * up[1] - f[1] * up[0],
+        ];
+        let l = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt().max(1e-9);
+        [c[0] / l, c[1] / l, c[2] / l]
+    };
+    let u = [
+        r[1] * f[2] - r[2] * f[1],
+        r[2] * f[0] - r[0] * f[2],
+        r[0] * f[1] - r[1] * f[0],
+    ];
+    let d = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    [
+        r[0],
+        r[1],
+        r[2],
+        -d(r, eye),
+        u[0],
+        u[1],
+        u[2],
+        -d(u, eye),
+        -f[0],
+        -f[1],
+        -f[2],
+        d(f, eye),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+}
+
+fn mat_persp(fov: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
+    let f = 1.0 / (fov * 0.5).tan();
+    [
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (far + near) / (near - far),
+        2.0 * far * near / (near - far),
+        0.0,
+        0.0,
+        -1.0,
+        0.0,
+    ]
+}
+
+/// o = a·b (row-major, вектор-столбец — конвенция render3d.lisp)
+fn mat_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut o = [0.0f32; 16];
+    for r in 0..4 {
+        for c in 0..4 {
+            let mut s = 0.0;
+            for k in 0..4 {
+                s += a[r * 4 + k] * b[k * 4 + c];
+            }
+            o[r * 4 + c] = s;
+        }
+    }
+    o
+}
+
+fn bench_3d_shading() -> Result<(), String> {
+    println!();
+    println!("== rlisp-engine :: бенчмарк 3D-шейдинга (этап 7, программный конвейер) ==");
+    println!("сцена (одинаковая для всех конфигураций): батч-вершинник, 100 текстурных квадов 6×6, экран 320×240");
+    const FRAMES: usize = 100;
+
+    // текстура: «трава» 32×32 с альфа-полосами (alpha-test вырезает 25% текселей)
+    let mut px = vec![0u8; 32 * 32 * 4];
+    for y in 0..32usize {
+        for x in 0..32usize {
+            let i = (y * 32 + x) * 4;
+            px[i] = 40;
+            px[i + 1] = 110 + ((x * 7 + y * 13) % 6) as u8 * 14;
+            px[i + 2] = 30;
+            px[i + 3] = if (x + y) % 8 < 2 { 0 } else { 255 };
+        }
+    }
+
+    // квад-билборд в плоскости XY (лицом к камере на +Z)
+    let scene = Сцена3d {
+        pos: vec![
+            -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0, 0.0,
+        ],
+        uv: vec![0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        idx: vec![0.0, 1.0, 2.0, 0.0, 2.0, 3.0],
+        insts: {
+            let mut v = Vec::with_capacity(100 * 12);
+            for gy in 0..10 {
+                for gx in 0..10 {
+                    let x = (gx as f32 - 4.5) * 5.0;
+                    let y = (gy as f32 - 4.5) * 3.8 + 1.0;
+                    let z = -(gy as f32) * 0.8;
+                    v.extend_from_slice(&[x, y, z, 6.0, 6.0, 6.0, 0.0, 0.0, 0.0, 0.55, 0.85, 0.4]);
+                }
+            }
+            v
+        },
+        mvp: {
+            let eye = [0.0f32, 2.0, 28.0];
+            let view = mat_lookat(eye, [0.0, 0.0, 0.0]);
+            let proj = mat_persp(0.9, 320.0 / 240.0, 0.5, 400.0);
+            mat_mul(&proj, &view)
+        },
+    };
+
+    let mut hal = Hal::new(OutputMode::Silent, 320, 240);
+    hal.tex.push(Tex {
+        w: 32,
+        h: 32,
+        px: px.clone(),
+    });
+    hal.tex_register(1, 32, 32, &px);
+    // свет и камера — как в игре: направление к источнику, view для блика
+    hal.r3.light = [0.3, 0.7, 0.65];
+    hal.r3.ambient = 0.35;
+    hal.r3.diffuse = 0.75;
+    hal.r3.spec = 0.0;
+    hal.r3.shininess = 32.0;
+    hal.r3.view = [0.0, 2.0, 28.0];
+    hal.r3.alpha_test = 0.0;
+    hal.r3.tiling = [1.0, 1.0];
+    hal.r3.fog = [0.6, 0.75, 0.9, 0.0];
+
+    let кадр = |hal: &mut Hal, s: &Сцена3d| -> Result<u64, String> {
+        hal.clear_all(8, 8, 18);
+        // как (gpu3d-clear): очистка z-буфера и статистики на каждый кадр
+        hal.r3.zbuf.fill(f32::INFINITY);
+        hal.r3.drawn = 0;
+        hal.r3.culled = 0;
+        render3d::batch_draw(hal, &s.pos, Some(&s.uv), &s.idx, &s.insts, &s.mvp, 1)
+    };
+    let замер = |hal: &mut Hal, метка: &str, s: &Сцена3d| -> Result<f64, String> {
+        // прогрев без замера (прогрев кэша/веток)
+        кадр(hal, s)?;
+        let t0 = Instant::now();
+        let mut drawn = 0u64;
+        for _ in 0..FRAMES {
+            drawn = кадр(hal, s)?;
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
+        if drawn == 0 {
+            return Err("бенч 3D: сцена не рисует ни одного треугольника (куллинг?)".into());
+        }
+        println!("[3d] {:<44} {:.2} мс/кадр ({} кадров)", метка, ms, FRAMES);
+        Ok(ms)
+    };
+
+    let base = замер(&mut hal, "Lambert, материалы выкл (база этапа 6)", &scene)?;
+    hal.r3.alpha_test = 0.5;
+    let at = замер(&mut hal, "+ alpha-test 0.5 (cutout 25% текселей)", &scene)?;
+    hal.r3.alpha_test = 0.0;
+    hal.r3.spec = 0.6;
+    let sp = замер(
+        &mut hal,
+        "+ блик Blinn-Phong (spec 0.6, shininess 32)",
+        &scene,
+    )?;
+    hal.r3.spec = 0.0;
+    hal.r3.fog = [0.6, 0.75, 0.9, 0.06];
+    let fg = замер(&mut hal, "+ туман (density 0.06, глубина 1/w)", &scene)?;
+    hal.r3.alpha_test = 0.5;
+    hal.r3.spec = 0.6;
+    let all = замер(
+        &mut hal,
+        "весь материал (alpha-test + блик + туман)",
+        &scene,
+    )?;
+
+    let pct = |new: f64, old: f64| (new / old - 1.0) * 100.0;
+    println!(
+        "дельта к базе: alpha-test {:+.1}%, блик {:+.1}%, туман {:+.1}%, весь материал {:+.1}%",
+        pct(at, base),
+        pct(sp, base),
+        pct(fg, base),
+        pct(all, base)
+    );
+    println!(
+        "честная метка: программный конвейер на CPU VPS-класса; разброс между запусками ±20% (см. docs/benchmark.md)"
+    );
     Ok(())
 }
 

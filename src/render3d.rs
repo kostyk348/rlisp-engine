@@ -330,9 +330,12 @@ fn transform_all(
 fn inst_matrix(ins: &[f32], out: &mut [f32; 16]) {
     let (tx, ty, tz) = (ins[0], ins[1], ins[2]);
     let (sx, sy, sz) = (ins[3], ins[4], ins[5]);
-    let (cy, syw) = ins[6].sin_cos();
-    let (cx, sxi) = ins[7].sin_cos();
-    let (cz, szi) = ins[8].sin_cos();
+    // ВАЖНО: f32::sin_cos возвращает (sin, cos) — не (cos, sin)!
+    // (баг мастер-ветки: перепутанная связка ломала матрицу инстанса —
+    // оси подменялись, батчи рисовались «сплющенными»)
+    let (syw, cy) = ins[6].sin_cos();
+    let (sxi, cx) = ins[7].sin_cos();
+    let (szi, cz) = ins[8].sin_cos();
     // R = Ry · Rx · Rz
     // Ry·Rx:
     //   [ cy  sy*sx  sy*cx ]
@@ -526,8 +529,9 @@ fn mesh_draw(
 
 /// Батч-вершинник: инстансы разворачиваются в общие world/clip/uv/tint-массивы,
 /// индексы смещаются, затем ОДНА растеризация на все инстансы.
+/// pub(crate): доступен бенчмарку 3D-шейдинга (main.rs, этап 7).
 #[allow(clippy::too_many_arguments)]
-fn batch_draw(
+pub(crate) fn batch_draw(
     hal: &mut Hal,
     pos: &[f32],
     uv: Option<&[f32]>,
@@ -1413,6 +1417,36 @@ mod tests {
         hal.r3.view = [0.0, 0.0, 0.0];
         hal.r3.tiling = [1.0, 1.0];
         hal.r3.fog = [0.7, 0.8, 0.9, 0.0];
+    }
+
+    #[test]
+    fn матрица_инстанса_yaw_по_конвенции() {
+        // Регрессия: f32::sin_cos возвращает (sin, cos) — прежняя связка
+        // перепутывала оси и ломала все батчи. Проверка конвенции
+        // M = T·Ry·Rx·Rz·S: yaw=π/2 переводит +X в -Z (колоночный вектор).
+        let pi2 = std::f32::consts::FRAC_PI_2;
+        let mut m = [0.0f32; 16];
+        inst_matrix(
+            &[5.0, 6.0, 7.0, 1.0, 1.0, 1.0, pi2, 0.0, 0.0, 1.0, 1.0, 1.0],
+            &mut m,
+        );
+        // вершина (1, 0, 0): world = R·v + t = (0, 0, -1) + (5, 6, 7)
+        let wx = m[0] * 1.0 + m[3];
+        let wy = m[4] * 1.0 + m[7];
+        let wz = m[8] * 1.0 + m[11];
+        assert!(близко(wx, 5.0), "wx = {}", wx);
+        assert!(близко(wy, 6.0), "wy = {}", wy);
+        assert!(близко(wz, 7.0 - 1.0), "wz = {}", wz);
+        // масштаб: вершина (0, 2, 0) → (2, 0) → world y = 6 + 2
+        let wy2 = m[5] * 2.0 + m[7];
+        assert!(близко(wy2, 8.0), "wy2 = {}", wy2);
+        // нулевые углы — диагональная матрица масштаба
+        inst_matrix(
+            &[0.0, 0.0, 0.0, 0.4, 0.4, 0.4, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            &mut m,
+        );
+        assert!(близко(m[0], 0.4) && близко(m[5], 0.4) && близко(m[10], 0.4));
+        assert!(близко(m[1] + m[2] + m[4] + m[6] + m[8] + m[9], 0.0));
     }
 
     #[test]
