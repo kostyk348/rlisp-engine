@@ -2,11 +2,17 @@
 // По ТЗ §3: HAL не знает игровых понятий. Никаких draw-sprite / physics-step —
 // только сырые команды: окно, растр, ввод, память, файлы, время.
 //
-// Отличие от финального ТЗ (честно, см. README): вместо wgpu — программный
-// растр (фреймбуфер RGBA) с тем же профилем API (gpu-clear / gpu-fill-rect /
-// gpu-blit / gpu-present). wgpu-бэкенд подключается за этим же фасадом.
+// Рендер (этап 1 роадмапа): за фасадом HAL — два бэкенда (src/gpu.rs):
+//   Backend::Software — программный растр (дефолт, ноль зависимостей):
+//                       команды пишут прямо в fb (как в v0.1–v0.3);
+//   Backend::Wgpu     — offscreen-рендер wgpu + readback в fb (фича `wgpu`).
+// Lisp-нативы (gpu-clear / gpu-fill-rect / gpu-blit / gpu-blit-tex /
+// gpu-present) не меняются — Lisp-уровень не знает о выборе бэкенда.
 
-use crate::interp::{env_define, fmt_value, load_file, num_val, int_val, need_args, resolve_path, Env, Value};
+use crate::gpu::{Backend, GpuResources};
+use crate::interp::{
+    env_define, fmt_value, int_val, load_file, need_args, num_val, resolve_path, Env, Value,
+};
 use crate::png;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,10 +49,21 @@ pub struct Hal {
     pub r3: crate::render3d::R3,
     /// Реестр текстур (v0.3): id = индекс+1, 0 — «без текстуры»
     pub tex: Vec<Tex>,
+    /// Активный рендер-бэкенд за фасадом (software | wgpu)
+    pub backend: Backend,
+    /// Менеджер GPU-ресурсов: книга хэндлов + счётчики для тестов на утечки
+    pub res: GpuResources,
+    /// Накопленное время GPU: (submit, readback) в нс — для --bench
+    pub gpu_submit_ns: u128,
+    pub gpu_readback_ns: u128,
 }
 
 impl Hal {
     pub fn new(out: OutputMode, w: usize, h: usize) -> Hal {
+        Self::with_backend(out, w, h, Backend::Software)
+    }
+
+    pub fn with_backend(out: OutputMode, w: usize, h: usize, backend: Backend) -> Hal {
         let w = w.max(8);
         let h = h.max(8);
         let mut hal = Hal {
@@ -62,9 +79,24 @@ impl Hal {
             next_mem: 1,
             r3: crate::render3d::R3::new(),
             tex: Vec::new(),
+            backend,
+            res: GpuResources::default(),
+            gpu_submit_ns: 0,
+            gpu_readback_ns: 0,
         };
         hal.fill_all(8, 8, 18);
         hal
+    }
+
+    // ——— диспетчеризация растровых команд в активный бэкенд ———
+
+    /// gpu-clear: у software — прямая запись в fb, у wgpu — clear-пас.
+    pub fn clear_all(&mut self, r: u8, g: u8, b: u8) {
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.clear(r, g, b);
+            return;
+        }
+        self.fill_all(r, g, b);
     }
 
     pub fn fill_all(&mut self, r: u8, g: u8, b: u8) {
@@ -78,7 +110,13 @@ impl Hal {
         }
     }
 
+    /// gpu-fill-rect
+    #[allow(clippy::too_many_arguments)]
     pub fn fill_rect(&mut self, x: i64, y: i64, w: i64, h: i64, r: u8, g: u8, b: u8) {
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.fill_rect(x, y, w, h, r, g, b);
+            return;
+        }
         let x0 = (x.max(0) as usize).min(self.w);
         let y0 = (y.max(0) as usize).min(self.h);
         let x1 = ((x + w).max(0) as usize).min(self.w);
@@ -98,7 +136,11 @@ impl Hal {
         }
     }
 
-    pub fn blit(&mut self, x: i64, y: i64, w: usize, h: usize, bytes: &[u8]) {
+    /// gpu-blit: RGBA-пиксели 1:1, alpha=0 пропускается
+    pub fn blit(&mut self, x: i64, y: i64, w: usize, h: usize, bytes: &[u8]) -> Result<(), String> {
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            return gpu.blit(x, y, w, h, bytes);
+        }
         for row in 0..h {
             let py = y + row as i64;
             if py < 0 || py >= self.h as i64 {
@@ -123,6 +165,150 @@ impl Hal {
                 self.fb[di + 3] = 255;
             }
         }
+        Ok(())
+    }
+
+    /// gpu-blit-tex: спрайт из реестра текстур (nearest, тинт, масштаб).
+    /// Dest-прямоугольник считается одинаково для обоих бэкендов.
+    pub fn blit_tex(
+        &mut self,
+        id: i64,
+        x: i64,
+        y: i64,
+        scale: f32,
+        tint: [f32; 3],
+    ) -> Result<(), String> {
+        let t = self
+            .tex
+            .get((id.max(1) - 1) as usize)
+            .ok_or("gpu-blit-tex: нет такой текстуры")?
+            .clone();
+        if t.w == 0 || t.h == 0 {
+            return Err("gpu-blit-tex: текстура освобождена".into());
+        }
+        let (tw, th) = (t.w as i64, t.h as i64);
+        let dw = ((tw as f32 * scale).round().max(1.0)) as i64;
+        let dh = ((th as f32 * scale).round().max(1.0)) as i64;
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            return gpu.blit_tex(id, x, y, dw, dh, tint);
+        }
+        for row in 0..dh {
+            let py = y + row;
+            if py < 0 || py >= self.h as i64 {
+                continue;
+            }
+            let sy = ((row as f32 / scale) as usize).min(t.w - 1);
+            for col in 0..dw {
+                let pxx = x + col;
+                if pxx < 0 || pxx >= self.w as i64 {
+                    continue;
+                }
+                let sx = ((col as f32 / scale) as usize).min(t.w - 1);
+                let si = (sy * t.w + sx) * 4;
+                let a = t.px[si + 3];
+                if a == 0 {
+                    continue; // прозрачный пиксель
+                }
+                let di = (py as usize * self.w + pxx as usize) * 4;
+                self.fb[di] = ((t.px[si] as f32 * tint[0]) as u8).clamp(0, 255);
+                self.fb[di + 1] = ((t.px[si + 1] as f32 * tint[1]) as u8).clamp(0, 255);
+                self.fb[di + 2] = ((t.px[si + 2] as f32 * tint[2]) as u8).clamp(0, 255);
+                self.fb[di + 3] = 255;
+            }
+        }
+        Ok(())
+    }
+
+    /// wgpu: дослать кадр на GPU и скомпозитить его в fb (PNG/ASCII/редактор
+    /// читают fb — путь вывода не меняется). Software: no-op.
+    /// Возвращает (submit_ns, readback_ns) — для профилирования.
+    pub fn flush_gpu(&mut self) -> (u128, u128) {
+        // swap, чтобы borrow бэкенда не пересекался с &mut fb
+        match std::mem::replace(&mut self.backend, Backend::Software) {
+            Backend::Wgpu(mut b) => {
+                let (w, h) = (self.w, self.h);
+                let t = b.flush(&mut self.fb, w, h, true);
+                self.gpu_submit_ns += t.0;
+                self.gpu_readback_ns += t.1;
+                self.backend = Backend::Wgpu(b);
+                t
+            }
+            other => {
+                self.backend = other;
+                (0, 0)
+            }
+        }
+    }
+
+    /// window-create: смена размера экрана (fb + бэкенд + 3D-«GPU»)
+    pub fn resize_window(&mut self, w: usize, h: usize) {
+        if w > 0 && h > 0 && w * h <= 4_000_000 {
+            self.w = w;
+            self.h = h;
+            self.fb = vec![0; w * h * 4];
+        }
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.resize(self.w, self.h);
+        }
+        self.r3.reset(self.w, self.h);
+    }
+
+    // ——— менеджер GPU-ресурсов: реестр текстур в обеих ветках ———
+
+    /// texture-load / texture-upload: хэндл в книгу ресурсов + загрузка на бэкенд
+    pub fn tex_register(&mut self, id: i64, w: usize, h: usize, px: &[u8]) {
+        let _ = (w, h); // размеры нужны только wgpu-стороне (создание текстуры)
+        self.res.register(id, px.len());
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.tex_upload(id, w, h, px);
+        }
+    }
+
+    /// texture-free: освободить слот реестра + хэндл бэкенда
+    pub fn tex_free(&mut self, id: i64) -> bool {
+        let freed = self.res.free(id);
+        if id >= 1 && id <= self.tex.len() as i64 {
+            self.tex[(id - 1) as usize] = Tex {
+                w: 0,
+                h: 0,
+                px: vec![],
+            };
+        }
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            gpu.tex_free(id);
+        }
+        freed
+    }
+
+    /// hot-reload: освободить все текстуры, кроме id из keep (на них ссылаются
+    /// persistent-значения), срезать пустые хвостовые слоты реестра.
+    /// Возвращает число освобождённых хэндлов.
+    pub fn invalidate_textures_except(&mut self, keep: &[i64]) -> usize {
+        let freed = self.res.invalidate_except(keep);
+        if let Backend::Wgpu(gpu) = &mut self.backend {
+            for id in 1..=self.tex.len() as i64 {
+                if !keep.contains(&id) {
+                    gpu.tex_free(id);
+                }
+            }
+        }
+        // нулевые слоты реестра для освобождённых id + срезка хвоста:
+        // px старых текстур больше не держится в памяти (в v0.3 они оставались
+        // до рестарта — «утечка 64 КБ/текстуру за reload», теперь исправлено)
+        for (i, t) in self.tex.iter_mut().enumerate() {
+            let id = (i + 1) as i64;
+            if !keep.contains(&id) {
+                *t = Tex {
+                    w: 0,
+                    h: 0,
+                    px: vec![],
+                };
+            }
+        }
+        while self.tex.last().is_some_and(|t| t.w == 0) {
+            self.tex.pop();
+        }
+        freed
     }
 }
 
@@ -140,7 +326,9 @@ fn str_val(v: &Value) -> String {
 
 pub fn ascii_frame(hal: &Hal) -> String {
     let cols = 100usize;
-    let rows = (((hal.h as f64 / hal.w as f64) * cols as f64) * 0.5).round().max(8.0) as usize;
+    let rows = (((hal.h as f64 / hal.w as f64) * cols as f64) * 0.5)
+        .round()
+        .max(8.0) as usize;
     let cw = (hal.w / cols).max(1);
     let ch = (hal.h / rows).max(1);
     let mut s = String::from("\x1b[H");
@@ -210,7 +398,10 @@ fn mem_block(hal: &Hal, v: &Value) -> Result<Rc<RefCell<Vec<u8>>>, String> {
             .get(id)
             .cloned()
             .ok_or_else(|| format!("mem: неизвестный указатель {}", id)),
-        other => Err(format!("mem: нужен указатель из mem-alloc: {}", fmt_value(other))),
+        other => Err(format!(
+            "mem: нужен указатель из mem-alloc: {}",
+            fmt_value(other)
+        )),
     }
 }
 
@@ -220,7 +411,7 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     }
     use need_args as need;
 
-    // — окно (по ТЗ §3.1; «поверхность» здесь — программный фреймбуфер) —
+    // — окно (по ТЗ §3.1; «поверхность» — фреймбуфер или offscreen-wgpu) —
     let h = hal.clone();
     def(env, "window-create", move |args| {
         need(args, 2)?;
@@ -228,13 +419,7 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let hh = num_val(&args[1])? as usize;
         let title = args.get(2).map(str_val).unwrap_or_else(|| "rlisp".into());
         let mut hal = h.borrow_mut();
-        if w > 0 && hh > 0 && w * hh <= 4_000_000 {
-            hal.w = w;
-            hal.h = hh;
-            hal.fb = vec![0; w * hh * 4];
-        }
-        let (cw, ch) = (hal.w, hal.h);
-        hal.r3.reset(cw, ch);
+        hal.resize_window(w, hh);
         hal.title = title;
         hal.fill_all(8, 8, 18);
         Ok(Value::Int(1))
@@ -242,17 +427,20 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     let h = hal.clone();
     def(env, "window-size", move |_: &[Value]| {
         let hal = h.borrow();
-        Ok(Value::List(vec![Value::Int(hal.w as i64), Value::Int(hal.h as i64)]))
+        Ok(Value::List(vec![
+            Value::Int(hal.w as i64),
+            Value::Int(hal.h as i64),
+        ]))
     });
 
-    // — GPU: сырые растровые команды (по ТЗ §3.2, фасад для wgpu) —
+    // — GPU: сырые растровые команды (по ТЗ §3.2); бэкенд выбирает Hal —
     let h = hal.clone();
     def(env, "gpu-clear", move |args| {
         need(args, 3)?;
         let r = f2b(num_val(&args[0])?);
         let g = f2b(num_val(&args[1])?);
         let b = f2b(num_val(&args[2])?);
-        h.borrow_mut().fill_all(r, g, b);
+        h.borrow_mut().clear_all(r, g, b);
         Ok(Value::Nil)
     });
     let h = hal.clone();
@@ -293,7 +481,7 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             }
             _ => return Err("gpu-blit: байты должны быть вектором 0-255".into()),
         };
-        h.borrow_mut().blit(x, y, w, hh, &bytes);
+        h.borrow_mut().blit(x, y, w, hh, &bytes)?;
         Ok(Value::Nil)
     });
     let h = hal.clone();
@@ -301,6 +489,8 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         use std::io::Write;
         let frame = {
             let mut hal = h.borrow_mut();
+            // wgpu: досылаем отложенные 2D-команды в fb ДО вывода кадра
+            let _ = hal.flush_gpu();
             hal.frame += 1;
             hal.frame
         };
@@ -326,7 +516,9 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "gpu-screenshot", move |args| {
         need(args, 1)?;
         let p = resolve_path(&str_val(&args[0]), std::path::Path::new("."));
-        let hal = h.borrow();
+        let mut hal = h.borrow_mut();
+        // MCP/скрипты: перед снимком досылаем GPU-слой в fb
+        let _ = hal.flush_gpu();
         png::write_png(&p, &hal.fb, hal.w, hal.h)?;
         Ok(Value::Bool(true))
     });
@@ -343,10 +535,11 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "time-now", move |_: &[Value]| {
         Ok(Value::Float(h.borrow().start.elapsed().as_secs_f64()))
     });
-    let h = hal.clone();
     def(env, "time-sleep", move |args| {
         need(args, 1)?;
-        std::thread::sleep(std::time::Duration::from_secs_f64(num_val(&args[0])?.clamp(0.0, 60.0)));
+        std::thread::sleep(std::time::Duration::from_secs_f64(
+            num_val(&args[0])?.clamp(0.0, 60.0),
+        ));
         Ok(Value::Nil)
     });
 
@@ -355,8 +548,8 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "file-read", move |args| {
         need(args, 1)?;
         let p = resolve_path(&str_val(&args[0]), &r);
-        let s = std::fs::read_to_string(&p)
-            .map_err(|e| format!("file-read {}: {}", p.display(), e))?;
+        let s =
+            std::fs::read_to_string(&p).map_err(|e| format!("file-read {}: {}", p.display(), e))?;
         Ok(Value::Str(s))
     });
     let r = root.clone();
@@ -458,7 +651,9 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let b = mem_block(&hal, &args[0])?;
         let i = int_val(&args[1])?.max(0) as usize;
         let bb = b.borrow();
-        Ok(Value::Int(*bb.get(i).ok_or("mem-read-u8: за границей")? as i64))
+        Ok(Value::Int(
+            *bb.get(i).ok_or("mem-read-u8: за границей")? as i64
+        ))
     });
     let h = hal.clone();
     def(env, "mem-fill", move |args| {
@@ -503,11 +698,19 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "texture-load", move |args| {
         need(args, 1)?;
         let p = resolve_path(&str_val(&args[0]), &r);
-        let bytes = std::fs::read(&p).map_err(|e| format!("texture-load {}: {}", p.display(), e))?;
+        let bytes =
+            std::fs::read(&p).map_err(|e| format!("texture-load {}: {}", p.display(), e))?;
         let (px, w, hh) = png::decode_png(&bytes)?;
         let mut hal = h.borrow_mut();
-        hal.tex.push(Tex { w, h: hh, px });
-        Ok(Value::Int(hal.tex.len() as i64))
+        hal.tex.push(Tex {
+            w,
+            h: hh,
+            px: px.clone(),
+        });
+        let id = hal.tex.len() as i64;
+        // менеджер ресурсов: хэндл в книгу + загрузка на активный бэкенд
+        hal.tex_register(id, w, hh, &px);
+        Ok(Value::Int(id))
     });
     let h = hal.clone();
     def(env, "texture-upload", move |args| {
@@ -544,26 +747,46 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
             _ => return Err("texture-upload: байты — вектор/список/f32vec 0-255".into()),
         };
         if px.len() < w * hh * 4 {
-            return Err(format!("texture-upload: байт {} < {}x{}x4", px.len(), w, hh));
+            return Err(format!(
+                "texture-upload: байт {} < {}x{}x4",
+                px.len(),
+                w,
+                hh
+            ));
         }
         let mut hal = h.borrow_mut();
-        hal.tex.push(Tex { w, h: hh, px });
-        Ok(Value::Int(hal.tex.len() as i64))
+        hal.tex.push(Tex {
+            w,
+            h: hh,
+            px: px.clone(),
+        });
+        let id = hal.tex.len() as i64;
+        hal.tex_register(id, w, hh, &px);
+        Ok(Value::Int(id))
     });
     let h = hal.clone();
     def(env, "texture-size", move |args| {
         need(args, 1)?;
         let hal = h.borrow();
         let id = int_val(&args[0])? as usize;
-        let t = hal.tex.get(id.wrapping_sub(1)).ok_or("texture-size: нет такой текстуры")?;
-        Ok(Value::List(vec![Value::Int(t.w as i64), Value::Int(t.h as i64)]))
+        let t = hal
+            .tex
+            .get(id.wrapping_sub(1))
+            .ok_or("texture-size: нет такой текстуры")?;
+        Ok(Value::List(vec![
+            Value::Int(t.w as i64),
+            Value::Int(t.h as i64),
+        ]))
     });
     let h = hal.clone();
     def(env, "texture-pixels", move |args| {
         need(args, 1)?;
         let hal = h.borrow();
         let id = int_val(&args[0])? as usize;
-        let t = hal.tex.get(id.wrapping_sub(1)).ok_or("texture-pixels: нет такой текстуры")?;
+        let t = hal
+            .tex
+            .get(id.wrapping_sub(1))
+            .ok_or("texture-pixels: нет такой текстуры")?;
         Ok(Value::Vector(Rc::new(RefCell::new(
             t.px.iter().map(|&b| Value::Int(b as i64)).collect(),
         ))))
@@ -573,9 +796,8 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         need(args, 1)?;
         let mut hal = h.borrow_mut();
         let id = int_val(&args[0])?;
-        if id >= 1 && id <= hal.tex.len() as i64 {
-            hal.tex[(id - 1) as usize] = Tex { w: 0, h: 0, px: vec![] };
-        }
+        // менеджер ресурсов: хэндл освобождается и в книге, и на бэкенде
+        hal.tex_free(id);
         Ok(Value::Nil)
     });
     // 2D-спрайт из текстуры: blit с опциональным тинтом (r g b 0..1) и масштабом
@@ -585,40 +807,18 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
         let id = int_val(&args[0])?;
         let x = num_val(&args[1])? as i64;
         let y = num_val(&args[2])? as i64;
-        let scale = args.get(3).map(|v| num_val(v)).transpose()?.unwrap_or(1.0).max(0.0) as f32;
+        let scale = args
+            .get(3)
+            .map(num_val)
+            .transpose()?
+            .unwrap_or(1.0)
+            .max(0.0) as f32;
         let tint = match args.get(4) {
             Some(v) => to_rgb(v)?,
             None => (1.0f32, 1.0, 1.0),
         };
-        let mut hal = h.borrow_mut();
-        let t = hal.tex.get((id.max(1) - 1) as usize).ok_or("gpu-blit-tex: нет такой текстуры")?.clone();
-        let (tw, th) = (t.w, t.h);
-        let dw = (tw as f32 * scale).round().max(1.0) as i64;
-        let dh = (th as f32 * scale).round().max(1.0) as i64;
-        for row in 0..dh {
-            let py = y + row;
-            if py < 0 || py >= hal.h as i64 {
-                continue;
-            }
-            let sy = ((row as f32 / scale) as usize).min(th - 1);
-            for col in 0..dw {
-                let pxx = x + col;
-                if pxx < 0 || pxx >= hal.w as i64 {
-                    continue;
-                }
-                let sx = ((col as f32 / scale) as usize).min(tw - 1);
-                let si = (sy * tw + sx) * 4;
-                let a = t.px[si + 3];
-                if a == 0 {
-                    continue; // прозрачный пиксель
-                }
-                let di = (py as usize * hal.w + pxx as usize) * 4;
-                hal.fb[di] = ((t.px[si] as f32 * tint.0) as u8).clamp(0, 255);
-                hal.fb[di + 1] = ((t.px[si + 1] as f32 * tint.1) as u8).clamp(0, 255);
-                hal.fb[di + 2] = ((t.px[si + 2] as f32 * tint.2) as u8).clamp(0, 255);
-                hal.fb[di + 3] = 255;
-            }
-        }
+        h.borrow_mut()
+            .blit_tex(id, x, y, scale, [tint.0, tint.1, tint.2])?;
         Ok(Value::Nil)
     });
 
@@ -626,12 +826,153 @@ pub fn register_hal(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>, root: PathBuf) {
     def(env, "sys-load", move |args| {
         need(args, 1)?;
         let p = resolve_path(&str_val(&args[0]), &root);
-        load_file(&p, &crate::interp::CoreCtx {
-            global: Rc::new(RefCell::new(crate::interp::env_new(None))),
-            registry: Rc::new(RefCell::new(vec![])),
-            root: PathBuf::from("."),
-        })
+        load_file(
+            &p,
+            &crate::interp::CoreCtx {
+                global: Rc::new(RefCell::new(crate::interp::env_new(None))),
+                registry: Rc::new(RefCell::new(vec![])),
+                root: PathBuf::from("."),
+            },
+        )
         .map(|_| Value::Bool(true))
         .map_err(|e| format!("sys-load: {}", e))
     });
+}
+
+// ————————————————————————————————————————————————————————————————————————
+// Тесты этапа 1: диспетчеризация бэкендов и менеджер ресурсов.
+// Все тесты идут по software-пути — без устройства/адаптера; wgpu-путь
+// проверяется книгой хэндлов (GpuResources) — тоже без устройства.
+// ————————————————————————————————————————————————————————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::GpuStats;
+
+    #[test]
+    fn диспетчер_дефолт_software_пишет_в_fb() {
+        let mut hal = Hal::new(OutputMode::Silent, 32, 32);
+        hal.clear_all(1, 2, 3);
+        assert_eq!(&hal.fb[0..4], &[1, 2, 3, 255]);
+        hal.fill_rect(0, 0, 4, 4, 9, 9, 9);
+        assert_eq!(&hal.fb[0..4], &[9, 9, 9, 255]);
+        let sprite = vec![5, 6, 7, 255];
+        hal.blit(2, 2, 1, 1, &sprite).unwrap();
+        assert_eq!(
+            &hal.fb[(2 * 32 + 2) * 4..(2 * 32 + 2) * 4 + 4],
+            &[5, 6, 7, 255]
+        );
+        // без flush — no-op
+        let fb_before = hal.fb.clone();
+        let (sub, rb) = hal.flush_gpu();
+        assert_eq!((sub, rb), (0, 0));
+        assert_eq!(hal.fb, fb_before);
+    }
+
+    #[test]
+    fn диспетчер_blit_tex_software_тинт_и_ошибка_освобождённой() {
+        let mut hal = Hal::new(OutputMode::Silent, 16, 16);
+        let px = vec![255u8; 4 * 4 * 4];
+        hal.tex.push(Tex { w: 4, h: 4, px });
+        hal.tex_register(1, 4, 4, &[255u8; 64]);
+        hal.blit_tex(1, 0, 0, 1.0, [0.5, 0.5, 0.5]).unwrap();
+        assert_eq!(hal.fb[0], 127); // 255 * 0.5
+        hal.tex_free(1);
+        assert!(hal.blit_tex(1, 0, 0, 1.0, [1.0, 1.0, 1.0]).is_err());
+        // вызов неизвестного id
+        assert!(hal.blit_tex(99, 0, 0, 1.0, [1.0, 1.0, 1.0]).is_err());
+    }
+
+    #[test]
+    fn ресуры_цикл_текстур_и_счётчики() {
+        let mut hal = Hal::new(OutputMode::Silent, 16, 16);
+        let px = vec![0u8; 64];
+        hal.tex.push(Tex {
+            w: 4,
+            h: 4,
+            px: px.clone(),
+        });
+        hal.tex_register(1, 4, 4, &px);
+        assert_eq!(hal.res.stats.tex_created, 1);
+        assert_eq!(hal.res.live(), 1);
+        hal.tex_free(1);
+        assert_eq!(hal.res.stats.tex_freed, 1);
+        assert_eq!(hal.res.live(), 0);
+        assert_eq!(hal.res.stats.tex_live(), 0);
+    }
+
+    #[test]
+    fn стресс_hot_reload_100_циклов_без_роста_памяти() {
+        let mut hal = Hal::new(OutputMode::Silent, 16, 16);
+        let px = vec![7u8; 16 * 16 * 4]; // «процедурная текстура» 1 КБ
+        for cycle in 0..100 {
+            // как на каждом reload 3D-игры: пересоздаются 5 текстур
+            for _ in 0..5 {
+                let id = (hal.tex.len() + 1) as i64;
+                hal.tex.push(Tex {
+                    w: 16,
+                    h: 16,
+                    px: px.clone(),
+                });
+                hal.tex_register(id, 16, 16, &px);
+            }
+            // persistent-мир держит только id=1
+            let keep = [1i64];
+            hal.invalidate_textures_except(&keep);
+            assert_eq!(hal.res.live(), 1, "цикл {}: жив один хэндл", cycle);
+            assert_eq!(
+                hal.res.bytes(),
+                16 * 16 * 4,
+                "цикл {}: память не растёт",
+                cycle
+            );
+            // реестр сжат: хвостовые пустые слоты срезаны
+            assert!(
+                hal.tex.iter().all(|t| t.w > 0),
+                "цикл {}: нет пустых слотов",
+                cycle
+            );
+        }
+        let GpuStats {
+            tex_created,
+            tex_freed,
+            reload_invalidated,
+            ..
+        } = hal.res.stats.clone();
+        assert_eq!(tex_created, 500);
+        assert_eq!(tex_freed, 499);
+        assert_eq!(reload_invalidated, 499);
+        assert_eq!(hal.res.stats.tex_live(), 1);
+        // полная зачистка — ноль живых
+        hal.invalidate_textures_except(&[]);
+        assert_eq!(hal.res.stats.tex_live(), 0);
+        assert_eq!(hal.res.bytes(), 0);
+        assert!(hal.tex.is_empty());
+    }
+
+    #[test]
+    fn resize_window_меняет_размер_и_фб() {
+        let mut hal = Hal::new(OutputMode::Silent, 32, 32);
+        hal.resize_window(64, 48);
+        assert_eq!((hal.w, hal.h), (64, 48));
+        assert_eq!(hal.fb.len(), 64 * 48 * 4);
+        // отказ слишком большой поверхности — размер не меняется
+        hal.resize_window(4096, 4096);
+        assert_eq!((hal.w, hal.h), (64, 48));
+    }
+
+    #[test]
+    fn фолбэк_флаг_wgpu_без_устройства_даёт_software() {
+        // логика выбора: probe Err => Software, и предупреждение печатается
+        let probe = crate::gpu::create_wgpu_backend(16, 16);
+        if let Err(e) = &probe {
+            let warn = crate::gpu::fallback_warning(&probe).unwrap();
+            assert!(warn.contains("--wgpu") && warn.contains(e));
+        }
+        // в любом исходе Hal::new с Software работает
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.clear_all(4, 5, 6);
+        assert_eq!(&hal.fb[0..4], &[4, 5, 6, 255]);
+    }
 }

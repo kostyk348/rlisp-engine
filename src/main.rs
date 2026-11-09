@@ -2,6 +2,7 @@
 // Горячий цикл — Lisp; Rust здесь делает только HAL-работу: время, ввод, кадры, hot reload.
 
 mod editor;
+mod gpu;
 mod hal;
 mod interp;
 mod json;
@@ -10,7 +11,7 @@ mod png;
 mod render3d;
 mod simd;
 
-use hal::{Hal, OutputMode};
+use hal::{Hal, OutputMode, Tex};
 use interp::{
     apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Env,
     GlobalCell, LoadRegistry, Value,
@@ -40,6 +41,7 @@ struct Args {
     serve: bool,
     port: u16,
     mcp: bool,
+    wgpu: bool,
 }
 
 impl Default for Args {
@@ -61,6 +63,7 @@ impl Default for Args {
             serve: false,
             port: 7300,
             mcp: false,
+            wgpu: false,
         }
     }
 }
@@ -87,7 +90,10 @@ rlisp-engine — игровой движок как Lisp-машина (Rust = т
   --fps F         шаг симуляции (по умолчанию 30)
   --fast          без привязки к реальному времени
   --width W --height H   стартовый размер экрана
-  --bench         бенчмарк SIMD-слоя (native + Lisp-уровень)
+  --bench         бенчмарк SIMD-слоя + 2D-кадра (Rust HAL vs Lisp-уровень)
+  --wgpu          GPU-бэкенд за фасадом HAL (фича `wgpu`): offscreen-рендер +
+                  readback в фреймбуфер; без адаптера — откат на программный
+                  растр с предупреждением (все скрипты работают как раньше)
   --eval EXPR     вычислить выражение Lisp и выйти
 
 РЕДАКТОР И AI (v0.3):
@@ -105,21 +111,56 @@ fn parse_args() -> Result<Args, String> {
             "--script" => args.script = it.next().ok_or("--script: нужен путь")?,
             "--ascii" => args.ascii = true,
             "--capture" => args.capture = Some(it.next().ok_or("--capture: нужен каталог")?),
-            "--every" => args.every = it.next().ok_or("--every: нужно N")?.parse().map_err(|_| "--every: не число")?,
+            "--every" => {
+                args.every = it
+                    .next()
+                    .ok_or("--every: нужно N")?
+                    .parse()
+                    .map_err(|_| "--every: не число")?
+            }
             "--frames" => {
-                let n: u64 = it.next().ok_or("--frames: нужно N")?.parse().map_err(|_| "--frames: не число")?;
+                let n: u64 = it
+                    .next()
+                    .ok_or("--frames: нужно N")?
+                    .parse()
+                    .map_err(|_| "--frames: не число")?;
                 args.frames = if n == 0 { u64::MAX } else { n };
             }
-            "--fps" => args.fps = it.next().ok_or("--fps: нужно F")?.parse().map_err(|_| "--fps: не число")?,
-            "--width" => args.width = it.next().ok_or("--width: нужно W")?.parse().map_err(|_| "--width: не число")?,
-            "--height" => args.height = it.next().ok_or("--height: нужно H")?.parse().map_err(|_| "--height: не число")?,
+            "--fps" => {
+                args.fps = it
+                    .next()
+                    .ok_or("--fps: нужно F")?
+                    .parse()
+                    .map_err(|_| "--fps: не число")?
+            }
+            "--width" => {
+                args.width = it
+                    .next()
+                    .ok_or("--width: нужно W")?
+                    .parse()
+                    .map_err(|_| "--width: не число")?
+            }
+            "--height" => {
+                args.height = it
+                    .next()
+                    .ok_or("--height: нужно H")?
+                    .parse()
+                    .map_err(|_| "--height: не число")?
+            }
             "--input" => args.input = Some(it.next().ok_or("--input: нужен файл")?),
             "--stdin-keys" => args.stdin_keys = true,
             "--fast" => args.fast = true,
             "--bench" => args.bench = true,
+            "--wgpu" => args.wgpu = true,
             "--eval" => args.eval_code = Some(it.next().ok_or("--eval: нужно выражение")?),
             "--serve" => args.serve = true,
-            "--port" => args.port = it.next().ok_or("--port: нужно N")?.parse().map_err(|_| "--port: не число")?,
+            "--port" => {
+                args.port = it
+                    .next()
+                    .ok_or("--port: нужно N")?
+                    .parse()
+                    .map_err(|_| "--port: не число")?
+            }
             "--mcp" => args.mcp = true,
             "--help" | "-h" => {
                 println!("{}", USAGE);
@@ -142,7 +183,11 @@ pub fn register_all(env: &Rc<Env>, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
     let cell: GlobalCell = Rc::new(RefCell::new(env_new(None)));
     let registry: LoadRegistry = Rc::new(RefCell::new(vec![]));
-    let ctx = CoreCtx { global: cell.clone(), registry, root };
+    let ctx = CoreCtx {
+        global: cell.clone(),
+        registry,
+        root,
+    };
     let env0 = env_new(None);
     register_all(&env0, &ctx, &halrc);
     env_define(&env0, "*root*", Value::Str(".".into()));
@@ -163,7 +208,7 @@ fn run_eval(code: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn run_bench() -> Result<(), String> {
+fn run_bench(args: &Args) -> Result<(), String> {
     println!("== rlisp-engine :: бенчмарк SIMD-слоя (критерий ТЗ §4.5) ==");
     println!("обнаружен уровень: {}", simd::level_name(simd::detect()));
     simd::bench_run();
@@ -219,6 +264,194 @@ fn run_bench() -> Result<(), String> {
         "[lisp]  выигрыш пакета над поэлементной интерпретацией: {:.0}×",
         per_scalar / per_batch
     );
+
+    bench_2d(args)
+}
+
+// ——— бенчмарк 2D-кадра (этап 1): программный растр vs wgpu за фасадом HAL ———
+
+/// Один кадр синтетической сцены 320×240. Формула ОДНА для софта, wgpu и
+/// Lisp-уровня — сравнение честное: clear + 120 fill-rect + 12 blit(24×24) +
+/// 4 blit-tex(2×) + present. Возвращает (мс/кадр всего, submit, readback).
+fn bench_frame_ops(hal: &mut Hal, sprite: &[u8], frames: usize) -> (f64, f64, f64) {
+    let mut sub = 0u128;
+    let mut rb = 0u128;
+    let t0 = Instant::now();
+    for _ in 0..frames {
+        hal.clear_all(8, 8, 18);
+        for i in 0..120i64 {
+            hal.fill_rect(i * 2, i * 2, 40, 20, 204, 76, 25);
+        }
+        for i in 0..12i64 {
+            let _ = hal.blit(i * 18, i * 15, 24, 24, sprite);
+        }
+        for i in 0..4i64 {
+            let _ = hal.blit_tex(1, i * 40, i * 40, 2.0, [1.0, 1.0, 1.0]);
+        }
+        let (s, r) = hal.flush_gpu();
+        sub += s;
+        rb += r;
+    }
+    let f = frames as f64;
+    (
+        t0.elapsed().as_secs_f64() * 1000.0 / f,
+        sub as f64 / 1e6 / f,
+        rb as f64 / 1e6 / f,
+    )
+}
+
+/// Тот же кадр через интерпретатор: (bench-frame) на Lisp.
+/// Возвращает мс/кадр; GPU-времена лежат в hal.gpu_*_ns (дельта).
+fn bench_lisp_scene(halrc: Rc<RefCell<Hal>>, frames: usize) -> Result<f64, String> {
+    let (ctx, cell) = make_context(halrc, PathBuf::from("assets/lisp"));
+    load_file(&PathBuf::from("assets/lisp/core.lisp"), &ctx)?;
+    // спрайт — глобальный вектор (Lisp-цикл не собирает его каждый кадр)
+    let sprite = Value::Vector(Rc::new(RefCell::new(
+        (0..24 * 24 * 4)
+            .map(|i| Value::Int(if i % 4 == 3 { 255 } else { 200 }))
+            .collect(),
+    )));
+    env_define(&cell.borrow().clone(), "bench-sprite", sprite);
+    let code = format!(
+        "(begin \
+         (define (bench-frame) \
+           (gpu-clear 0.03 0.03 0.07) \
+           (dotimes (i 120) (gpu-fill-rect (* i 2) (* i 2) 40 20 0.8 0.3 0.1)) \
+           (dotimes (i 12) (gpu-blit (* i 18) (* i 15) 24 24 bench-sprite)) \
+           (dotimes (i 4) (gpu-blit-tex 1 (* i 40) (* i 40) 2.0 (list 1.0 1.0 1.0))) \
+           (gpu-present)) \
+         (define t0 (time-now)) \
+         (dotimes (i {}) (bench-frame)) \
+         (- (time-now) t0))",
+        frames
+    );
+    let prog = parse_program(&code)?;
+    let secs = interp::eval(&prog[0], &cell.borrow().clone(), 0)?;
+    match secs {
+        Value::Float(f) => Ok(f * 1000.0 / frames as f64),
+        _ => Err("бенчмарк 2D: Lisp вернул не число".into()),
+    }
+}
+
+fn bench_tex() -> Vec<u8> {
+    (0..32 * 32)
+        .flat_map(|i| {
+            [
+                (i % 251) as u8,
+                ((i * 7) % 255) as u8,
+                ((i * 13) % 255) as u8,
+                255u8,
+            ]
+        })
+        .collect()
+}
+
+fn bench_sprite() -> Vec<u8> {
+    (0..24 * 24)
+        .flat_map(|i| {
+            [
+                (i % 200) as u8,
+                128,
+                ((i * 3) % 200) as u8,
+                if i % 16 == 0 { 0u8 } else { 255u8 }, // чуть прозрачности для blit
+            ]
+        })
+        .collect()
+}
+
+fn bench_2d(args: &Args) -> Result<(), String> {
+    println!();
+    println!("== rlisp-engine :: бенчмарк 2D-кадра 320×240 (этап 1) ==");
+    println!(
+        "сцена (одинаковая для всех бэкендов): gpu-clear + 120 gpu-fill-rect + 12 gpu-blit 24×24 + 4 gpu-blit-tex ×2 + gpu-present"
+    );
+    let (sprite, tex) = (bench_sprite(), bench_tex());
+    const FRAMES_RUST: usize = 300;
+    const FRAMES_LISP: usize = 100;
+
+    // — программный растр (дефолт, ноль зависимостей) —
+    let mut hal = Hal::new(OutputMode::Silent, 320, 240);
+    hal.tex.push(Tex {
+        w: 32,
+        h: 32,
+        px: tex.clone(),
+    });
+    hal.tex_register(1, 32, 32, &tex);
+    let (t, _s, _r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
+    println!(
+        "[soft] Rust HAL, прямые вызовы (чистая стоимость растра без Lisp): {:.2} мс/кадр ({} кадров)",
+        t, FRAMES_RUST
+    );
+    let halrc = Rc::new(RefCell::new(Hal::new(OutputMode::Silent, 320, 240)));
+    {
+        let mut h = halrc.borrow_mut();
+        h.tex.push(Tex {
+            w: 32,
+            h: 32,
+            px: tex.clone(),
+        });
+        h.tex_register(1, 32, 32, &tex);
+    }
+    let lisp_soft = bench_lisp_scene(halrc, FRAMES_LISP)?;
+    println!(
+        "[soft] Lisp поверх HAL (тот же кадр через интерпретатор): {:.2} мс/кадр ({} кадров) — накладные расходы Lisp: {:.2} мс/кадр",
+        lisp_soft,
+        FRAMES_LISP,
+        (lisp_soft - t).max(0.0)
+    );
+
+    // — wgpu-бэкенд (только по флагу --wgpu и при наличии адаптера) —
+    if !args.wgpu {
+        println!("[wgpu] пропущено: запустите `--bench --wgpu` (нужны фича cargo --features wgpu и GPU-адаптер)");
+        return Ok(());
+    }
+    let gpu_backend = match gpu::create_wgpu_backend(320, 240) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("wgpu-адаптер недоступен ({}): wgpu-бенчмарк пропущен", e);
+            return Ok(());
+        }
+    };
+    let mut hal = Hal::with_backend(
+        OutputMode::Silent,
+        320,
+        240,
+        gpu::Backend::Wgpu(gpu_backend),
+    );
+    hal.tex.push(Tex {
+        w: 32,
+        h: 32,
+        px: tex.clone(),
+    });
+    hal.tex_register(1, 32, 32, &tex);
+    let (t, s, r) = bench_frame_ops(&mut hal, &sprite, FRAMES_RUST);
+    println!(
+        "[wgpu] Rust HAL, прямые вызовы: {:.2} мс/кадр ({} кадров) = submit {:.2} (запись+отправка команд GPU) + readback {:.2} (copy+map+композит CPU←GPU)",
+        t, FRAMES_RUST, s, r
+    );
+    let halrc = Rc::new(RefCell::new(Hal::with_backend(
+        OutputMode::Silent,
+        320,
+        240,
+        gpu::Backend::Wgpu(gpu::create_wgpu_backend(320, 240)?),
+    )));
+    {
+        let mut h = halrc.borrow_mut();
+        h.tex.push(Tex {
+            w: 32,
+            h: 32,
+            px: tex.clone(),
+        });
+        h.tex_register(1, 32, 32, &tex);
+    }
+    let lisp_gpu = bench_lisp_scene(halrc, FRAMES_LISP)?;
+    println!(
+        "[wgpu] Lisp поверх HAL (тот же кадр через интерпретатор): {:.2} мс/кадр ({} кадров)",
+        lisp_gpu, FRAMES_LISP
+    );
+    println!();
+    println!("честная метка этапа 1: сравнение «wgpu кратно быстрее» требует GPU-железа;");
+    println!("в headless/CI без адаптера wgpu-путь откатывается на программный растр.");
     Ok(())
 }
 
@@ -232,11 +465,27 @@ fn parse_input_file(path: &str) -> Result<Vec<(f64, Value)>, String> {
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 3 {
-            return Err(format!("input {}: строка {}: ожидается «ВРЕМЯ КЛАВИША down|up»", path, ln + 1));
+            return Err(format!(
+                "input {}: строка {}: ожидается «ВРЕМЯ КЛАВИША down|up»",
+                path,
+                ln + 1
+            ));
         }
-        let t: f64 = parts[0].parse().map_err(|_| format!("input {}: строка {}: плохое время", path, ln + 1))?;
-        let ev = if parts[2] == "down" { "key-down" } else { "key-up" };
-        out.push((t, Value::List(vec![Value::Sym(ev.into()), Value::Str(parts[1].to_string())])));
+        let t: f64 = parts[0]
+            .parse()
+            .map_err(|_| format!("input {}: строка {}: плохое время", path, ln + 1))?;
+        let ev = if parts[2] == "down" {
+            "key-down"
+        } else {
+            "key-up"
+        };
+        out.push((
+            t,
+            Value::List(vec![
+                Value::Sym(ev.into()),
+                Value::Str(parts[1].to_string()),
+            ]),
+        ));
     }
     out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(out)
@@ -253,8 +502,8 @@ fn spawn_stdin() -> std::sync::mpsc::Receiver<u8> {
             match lock.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for i in 0..n {
-                        if tx.send(buf[i]).is_err() {
+                    for &b in &buf[..n] {
+                        if tx.send(b).is_err() {
                             return;
                         }
                     }
@@ -294,9 +543,27 @@ pub fn reload_all(
         }
     }
     let n_saved = saved.len();
+    // Этап 1 (менеджер GPU-ресурсов): старые текстуры, на которые не ссылается
+    // persistent-состояние, освобождаются при reload — раньше они оставались в
+    // реестре до рестарта (утечка ~64 КБ/текстуру за reload).
+    let mut keep: Vec<i64> = vec![];
+    for (_, v) in &saved {
+        gpu::collect_int_refs(v, &mut keep, 0);
+    }
+    let invalidated = halrc.borrow_mut().invalidate_textures_except(&keep);
+    if invalidated > 0 {
+        eprintln!(
+            "[hot-reload] GPU-ресурсы: освобождено текстур: {}",
+            invalidated
+        );
+    }
     let new_env = env_new(None);
     register_all(&new_env, ctx, halrc);
-    env_define(&new_env, "*root*", Value::Str(ctx.root.to_string_lossy().into_owned()));
+    env_define(
+        &new_env,
+        "*root*",
+        Value::Str(ctx.root.to_string_lossy().into_owned()),
+    );
     *ctx.global.borrow_mut() = new_env.clone();
     let files: Vec<PathBuf> = ctx.registry.borrow().clone();
     for p in &files {
@@ -313,19 +580,54 @@ pub fn reload_all(
 
 fn run_engine(args: &Args) -> Result<(), String> {
     let script = PathBuf::from(&args.script);
-    let root = script.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let root = script
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
     let out_mode = if let Some(dir) = &args.capture {
         std::fs::create_dir_all(dir).map_err(|e| format!("capture {}: {}", dir, e))?;
-        OutputMode::Png { dir: PathBuf::from(dir), every: args.every.max(1) }
+        OutputMode::Png {
+            dir: PathBuf::from(dir),
+            every: args.every.max(1),
+        }
     } else if args.ascii {
         OutputMode::Ascii
     } else {
         OutputMode::Silent
     };
 
-    let halrc = Rc::new(RefCell::new(Hal::new(out_mode, args.width, args.height)));
+    // — бэкенд рендера: --wgpu → wgpu за фасадом HAL; без адаптера/фичи —
+    //   честный откат на программный растр (все скрипты работают как раньше) —
+    let (backend, render_note) = if args.wgpu {
+        let probe = gpu::create_wgpu_backend(args.width, args.height);
+        if let Some(w) = gpu::fallback_warning(&probe) {
+            eprintln!("{}", w);
+        }
+        match probe {
+            Ok(b) => {
+                let info = b.adapter_info();
+                (gpu::Backend::Wgpu(b), format!("wgpu: {}", info))
+            }
+            Err(_) => (
+                gpu::Backend::Software,
+                "программный растр (fallback из --wgpu)".into(),
+            ),
+        }
+    } else {
+        (gpu::Backend::Software, "программный растр".into())
+    };
+    let halrc = Rc::new(RefCell::new(Hal::with_backend(
+        out_mode,
+        args.width,
+        args.height,
+        backend,
+    )));
     let (ctx, cell) = make_context(halrc.clone(), root.clone());
-    env_define(&cell.borrow().clone(), "*root*", Value::Str(root.to_string_lossy().into_owned()));
+    env_define(
+        &cell.borrow().clone(),
+        "*root*",
+        Value::Str(root.to_string_lossy().into_owned()),
+    );
 
     load_file(&script, &ctx)?;
     let (w, h) = {
@@ -339,8 +641,16 @@ fn run_engine(args: &Args) -> Result<(), String> {
         editor::install_bridge(b.clone());
         editor::start_server(b.clone(), args.port, root.clone())
             .map_err(|e| format!("редактор: порт {} занят: {}", args.port, e))?;
-        println!("редактор: http://127.0.0.1:{} (иерархия · инспектор · REPL · ассеты)", args.port);
-        let assets: Vec<String> = ctx.registry.borrow().iter().map(|p| p.display().to_string()).collect();
+        println!(
+            "редактор: http://127.0.0.1:{} (иерархия · инспектор · REPL · ассеты)",
+            args.port
+        );
+        let assets: Vec<String> = ctx
+            .registry
+            .borrow()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
         *b.assets.lock().unwrap() = assets;
         Some(b)
     } else {
@@ -356,8 +666,9 @@ fn run_engine(args: &Args) -> Result<(), String> {
     let n_files = files.len();
 
     println!(
-        "rlisp-engine v0.3 | SIMD: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        "rlisp-engine v0.3 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
         simd::level_name(simd::detect()),
+        render_note,
         w,
         h,
         n_files,
@@ -395,27 +706,24 @@ fn run_engine(args: &Args) -> Result<(), String> {
         }
         // ввод с клавиатуры
         if let Some(rx) = &rx {
-            loop {
-                match rx.try_recv() {
-                    Ok(b) => match b {
-                        b'q' | b'Q' | 3 => quit = true,
-                        b'a'..=b'z' => {
-                            let k = (b as char).to_string();
-                            halrc.borrow_mut().queue.push(Value::List(vec![
-                                Value::Sym("key-down".into()),
-                                Value::Str(k),
-                            ]));
-                        }
-                        b'A'..=b'Z' => {
-                            let k = (b as char).to_lowercase().to_string();
-                            halrc.borrow_mut().queue.push(Value::List(vec![
-                                Value::Sym("key-up".into()),
-                                Value::Str(k),
-                            ]));
-                        }
-                        _ => {}
-                    },
-                    Err(_) => break,
+            while let Ok(b) = rx.try_recv() {
+                match b {
+                    b'q' | b'Q' | 3 => quit = true,
+                    b'a'..=b'z' => {
+                        let k = (b as char).to_string();
+                        halrc.borrow_mut().queue.push(Value::List(vec![
+                            Value::Sym("key-down".into()),
+                            Value::Str(k),
+                        ]));
+                    }
+                    b'A'..=b'Z' => {
+                        let k = (b as char).to_lowercase().to_string();
+                        halrc.borrow_mut().queue.push(Value::List(vec![
+                            Value::Sym("key-up".into()),
+                            Value::Str(k),
+                        ]));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -434,7 +742,12 @@ fn run_engine(args: &Args) -> Result<(), String> {
                     }
                     Err(e) => b.log_line(format!("[reload] ошибка: {}", e)),
                 }
-                let assets: Vec<String> = ctx.registry.borrow().iter().map(|p| p.display().to_string()).collect();
+                let assets: Vec<String> = ctx
+                    .registry
+                    .borrow()
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
                 *b.assets.lock().unwrap() = assets;
             }
             let paused = b.paused.load(std::sync::atomic::Ordering::Relaxed);
@@ -461,7 +774,10 @@ fn run_engine(args: &Args) -> Result<(), String> {
                         frames, p.display(), n
                     );
                 }
-                Err(e) => eprintln!("[hot-reload] ошибка: {} — продолжаем на старом окружении", e),
+                Err(e) => eprintln!(
+                    "[hot-reload] ошибка: {} — продолжаем на старом окружении",
+                    e
+                ),
             }
         }
 
@@ -507,14 +823,21 @@ fn run_engine(args: &Args) -> Result<(), String> {
         if let Some(b) = &bridge {
             {
                 let mut hal = halrc.borrow_mut();
+                // wgpu-режим: живой вид редактора читает fb — досылаем GPU-слой
+                let _ = hal.flush_gpu();
                 *b.fb.lock().unwrap() = hal.fb.clone();
                 *b.fb_wh.lock().unwrap() = (hal.w, hal.h);
-                b.drawcalls.store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
+                b.drawcalls
+                    .store(hal.r3.drawn, std::sync::atomic::Ordering::Relaxed);
             }
             b.frame.store(frames, std::sync::atomic::Ordering::Relaxed);
             let inst = 1.0 / last_frame_at.elapsed().as_secs_f64().max(1e-6);
             let mut f = b.fps.lock().unwrap();
-            *f = if *f <= 0.0 { inst } else { *f * 0.9 + inst * 0.1 };
+            *f = if *f <= 0.0 {
+                inst
+            } else {
+                *f * 0.9 + inst * 0.1
+            };
             editor::publish_scene(&cell, b);
         }
 
@@ -535,7 +858,9 @@ fn run_engine(args: &Args) -> Result<(), String> {
     }
 
     let g = cell.borrow().clone();
-    let score = env_get(&g, "*score*").map(|v| fmt_value(&v)).unwrap_or_else(|| "?".into());
+    let score = env_get(&g, "*score*")
+        .map(|v| fmt_value(&v))
+        .unwrap_or_else(|| "?".into());
     let wall = wall_start.elapsed().as_secs_f64();
     println!(
         "итог: кадров {} за {:.1}с ({:.1} fps) | hot-reload: {} | score: {}",
@@ -562,7 +887,7 @@ fn main() {
         println!("уровень после калибровки: {}", simd::level_name(lvl));
     }
     if args.bench {
-        if let Err(e) = run_bench() {
+        if let Err(e) = run_bench(&args) {
             eprintln!("[ошибка] {}", e);
             std::process::exit(1);
         }

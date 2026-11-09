@@ -92,7 +92,12 @@ fn http_res(stream: &mut TcpStream, code: &str, ctype: &str, body: Vec<u8>) {
 }
 
 fn http_json(stream: &mut TcpStream, j: &Json) {
-    http_res(stream, "200 OK", "application/json; charset=utf-8", j.dump().into_bytes());
+    http_res(
+        stream,
+        "200 OK",
+        "application/json; charset=utf-8",
+        j.dump().into_bytes(),
+    );
 }
 
 fn http_err(stream: &mut TcpStream, _code: &str, msg: &str) {
@@ -212,7 +217,12 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
             let html = include_str!("../assets/editor/index.html");
-            http_res(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes().to_vec());
+            http_res(
+                &mut stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                html.as_bytes().to_vec(),
+            );
         }
         ("GET", "/frame.png") => {
             let fb = bridge.fb.lock().unwrap().clone();
@@ -247,15 +257,37 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             let scene = bridge.scene.lock().unwrap().clone();
             let assets = bridge.assets.lock().unwrap().clone();
             let j = Json::obj(vec![
-                ("frame", Json::int(bridge.frame.load(Ordering::Relaxed) as i64)),
+                (
+                    "frame",
+                    Json::int(bridge.frame.load(Ordering::Relaxed) as i64),
+                ),
                 ("fps", Json::num(*bridge.fps.lock().unwrap())),
-                ("drawcalls", Json::int(bridge.drawcalls.load(Ordering::Relaxed) as i64)),
+                (
+                    "drawcalls",
+                    Json::int(bridge.drawcalls.load(Ordering::Relaxed) as i64),
+                ),
                 ("paused", Json::Bool(bridge.paused.load(Ordering::Relaxed))),
                 ("last_result", Json::int(max_id as i64)),
-                ("results", Json::Arr(results.iter().map(|(id, r)| Json::obj(vec![("id", Json::int(*id as i64)), ("result", Json::str(r))])).collect())),
+                (
+                    "results",
+                    Json::Arr(
+                        results
+                            .iter()
+                            .map(|(id, r)| {
+                                Json::obj(vec![
+                                    ("id", Json::int(*id as i64)),
+                                    ("result", Json::str(r)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
                 ("scene", Json::Str(scene)),
                 ("log", Json::Arr(log)),
-                ("assets", Json::Arr(assets.iter().map(|a| Json::str(a)).collect())),
+                (
+                    "assets",
+                    Json::Arr(assets.iter().map(|a| Json::str(a)).collect()),
+                ),
             ]);
             http_json(&mut stream, &j);
         }
@@ -263,7 +295,10 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             let p = q.get("path").unwrap_or("").to_string();
             match safe_lisp_path(&root, &p) {
                 Some(canon) => match std::fs::read_to_string(&canon) {
-                    Ok(content) => http_json(&mut stream, &Json::obj(vec![("content", Json::str(&content))])),
+                    Ok(content) => http_json(
+                        &mut stream,
+                        &Json::obj(vec![("content", Json::str(&content))]),
+                    ),
                     Err(e) => http_err(&mut stream, "404", &format!("{}", e)),
                 },
                 None => http_err(&mut stream, "403", "только .lisp внутри assets/lisp"),
@@ -275,7 +310,15 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             match code {
                 Some(c) => {
                     bridge.cmds.lock().unwrap().push((id, c.clone()));
-                    bridge.log_line(format!("[eval #{id}] {}", c.lines().next().unwrap_or("").chars().take(80).collect::<String>()));
+                    bridge.log_line(format!(
+                        "[eval #{id}] {}",
+                        c.lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                    ));
                     http_json(&mut stream, &Json::obj(vec![("id", Json::int(id as i64))]));
                 }
                 None => http_err(&mut stream, "400", "нужно поле code"),
@@ -285,8 +328,16 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
             let parsed = crate::json::parse(&body_str);
             match parsed {
                 Ok(j) => {
-                    let p = j.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let content = j.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let p = j
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let content = j
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     match safe_lisp_path(&root, &p) {
                         Some(canon) => match std::fs::write(&canon, content.as_bytes()) {
                             Ok(_) => {
@@ -303,7 +354,11 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
         }
         ("POST", "/api/key") => {
             if let Ok(j) = crate::json::parse(&body_str) {
-                let key = j.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let key = j
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let down = j.get("down").and_then(|v| v.as_bool()).unwrap_or(true);
                 if !key.is_empty() && key.chars().all(|c| c.is_ascii_lowercase()) {
                     bridge.keys.lock().unwrap().push((key, down));
@@ -329,7 +384,11 @@ fn serve(mut stream: TcpStream, bridge: Arc<Bridge>, root: std::path::PathBuf) {
     }
 }
 
-pub fn start_server(bridge: Arc<Bridge>, port: u16, root: std::path::PathBuf) -> std::io::Result<()> {
+pub fn start_server(
+    bridge: Arc<Bridge>,
+    port: u16,
+    root: std::path::PathBuf,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     std::thread::spawn(move || {
         for conn in listener.incoming() {
@@ -423,14 +482,24 @@ pub fn drain_editor_cmds(
         while rq.len() > 64 {
             rq.remove(0);
         }
-        bridge.log_line(format!("[#{}] {}", id, text.lines().next().unwrap_or("").chars().take(120).collect::<String>()));
+        bridge.log_line(format!(
+            "[#{}] {}",
+            id,
+            text.lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(120)
+                .collect::<String>()
+        ));
     }
     let keys: Vec<(String, bool)> = std::mem::take(&mut *bridge.keys.lock().unwrap());
     if !keys.is_empty() {
         let mut hal = halrc.borrow_mut();
         for (k, down) in keys {
             let ev = if down { "key-down" } else { "key-up" };
-            hal.queue.push(Value::List(vec![Value::Sym(ev.into()), Value::Str(k)]));
+            hal.queue
+                .push(Value::List(vec![Value::Sym(ev.into()), Value::Str(k)]));
         }
     }
     reload

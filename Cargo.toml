@@ -13,3 +13,18 @@ codegen-units = 1
 # Осознанно НОЛЬ зависимостей: HAL, интерпретатор, SIMD и PNG-писатель
 # написаны с нуля (см. README, раздел «Честные отличия от ТЗ»).
 [dependencies]
+
+# Опциональный wgpu-бэкенд за фасадом HAL (cargo build --features wgpu).
+# Дефолтная сборка остаётся с НУЛЁМ зависимостей: cargo build не тянет wgpu.
+# Версия 0.20 выбрана под MSRV rustc 1.75 (собирается нашей 1.83); новые
+# линейки wgpu требуют более свежий rustc (24.x — новее, 30.x — 1.87+).
+# Нативные бэкенды (Vulkan/GL/Metal/DX12) в 0.20 входят в поставку wgpu
+# без отдельных фич — на Linux используется Vulkan/GL, offscreen, без окна.
+[dependencies.wgpu]
+version = "0.20"
+optional = true
+
+[features]
+default = []
+# Full wgpu-бэкенд: offscreen-рендер + readback в Hal::fb (см. src/gpu.rs).
+wgpu = ["dep:wgpu"]

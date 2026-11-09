@@ -56,7 +56,10 @@ pub struct CoreCtx {
 // ——————————————————————————— окружения ———————————————————————————
 
 pub fn env_new(parent: Option<Rc<Env>>) -> Rc<Env> {
-    Rc::new(Env { vars: RefCell::new(HashMap::new()), parent })
+    Rc::new(Env {
+        vars: RefCell::new(HashMap::new()),
+        parent,
+    })
 }
 
 pub fn env_get(env: &Rc<Env>, name: &str) -> Option<Value> {
@@ -93,7 +96,11 @@ pub fn fmt_float(f: f64) -> String {
         return "NaN".into();
     }
     if f.is_infinite() {
-        return if f > 0.0 { "+inf".into() } else { "-inf".into() };
+        return if f > 0.0 {
+            "+inf".into()
+        } else {
+            "-inf".into()
+        };
     }
     let s = format!("{:.6}", f);
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -116,7 +123,11 @@ pub fn fmt_value(v: &Value) -> String {
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().take(24).map(fmt_value).collect();
-            let more = if items.len() > 24 { format!(" …+{}", items.len() - 24) } else { String::new() };
+            let more = if items.len() > 24 {
+                format!(" …+{}", items.len() - 24)
+            } else {
+                String::new()
+            };
             format!("({}{})", inner.join(" "), more)
         }
         Value::Vector(r) => {
@@ -414,7 +425,10 @@ pub fn eval(expr: &Value, env: &Rc<Env>, depth: usize) -> Result<Value, String> 
                                     env_define(&env, name, v);
                                 }
                                 other => {
-                                    return Err(format!("define: плохая форма: {}", fmt_value(other)))
+                                    return Err(format!(
+                                        "define: плохая форма: {}",
+                                        fmt_value(other)
+                                    ))
                                 }
                             }
                             return Ok(Value::Nil);
@@ -443,7 +457,9 @@ pub fn eval(expr: &Value, env: &Rc<Env>, depth: usize) -> Result<Value, String> 
                         }
                         "defmacro" => {
                             if items.len() < 3 {
-                                return Err("defmacro: нужна форма (defmacro имя (args) тело)".into());
+                                return Err(
+                                    "defmacro: нужна форма (defmacro имя (args) тело)".into()
+                                );
                             }
                             let name = as_sym(&items[1])?;
                             let (params, rest) = parse_params(&items[2])?;
@@ -497,7 +513,10 @@ pub fn eval(expr: &Value, env: &Rc<Env>, depth: usize) -> Result<Value, String> 
                                 }
                                 Value::Nil => {}
                                 other => {
-                                    return Err(format!("let: плохие связывания: {}", fmt_value(other)))
+                                    return Err(format!(
+                                        "let: плохие связывания: {}",
+                                        fmt_value(other)
+                                    ))
                                 }
                             }
                             if items.len() == 2 {
@@ -588,16 +607,14 @@ pub fn eval(expr: &Value, env: &Rc<Env>, depth: usize) -> Result<Value, String> 
                         }
                         _ => {
                             // макрос?
-                            if let Some(v) = env_get(&env, head) {
-                                if let Value::Lambda(l) = v {
-                                    if l.is_macro {
-                                        expansions += 1;
-                                        if expansions > 10000 {
-                                            return Err("слишком много макрорасширений".into());
-                                        }
-                                        expr = apply_lambda(&l, &items[1..], depth + 1)?;
-                                        continue;
+                            if let Some(Value::Lambda(l)) = env_get(&env, head) {
+                                if l.is_macro {
+                                    expansions += 1;
+                                    if expansions > 10000 {
+                                        return Err("слишком много макрорасширений".into());
                                     }
+                                    expr = apply_lambda(&l, &items[1..], depth + 1)?;
+                                    continue;
                                 }
                             }
                         }
@@ -766,8 +783,7 @@ pub fn load_file(path: &Path, ctx: &CoreCtx) -> Result<(), String> {
     }
     let g = ctx.global.borrow().clone();
     for (i, e) in prog.iter().enumerate() {
-        eval(e, &g, 0)
-            .map_err(|err| format!("{}: форма {}: {}", path.display(), i + 1, err))?;
+        eval(e, &g, 0).map_err(|err| format!("{}: форма {}: {}", path.display(), i + 1, err))?;
     }
     Ok(())
 }
@@ -802,7 +818,9 @@ fn next_random() -> f64 {
             .unwrap_or(0x9E3779B97F4A7C15)
             | 1;
     }
-    x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    x = x
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     RND_STATE.store(x, Ordering::Relaxed);
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
@@ -910,7 +928,9 @@ pub fn register_core(env: &Rc<Env>, ctx: &CoreCtx) {
     });
     def(env, "pair?", |args| {
         need(args, 1)?;
-        Ok(Value::Bool(matches!(&args[0], Value::List(l) if !l.is_empty())))
+        Ok(Value::Bool(
+            matches!(&args[0], Value::List(l) if !l.is_empty()),
+        ))
     });
 
     // — арифметика —
@@ -927,7 +947,11 @@ pub fn register_core(env: &Rc<Env>, ctx: &CoreCtx) {
                 other => return Err(format!("+: не число: {}", fmt_value(other))),
             }
         }
-        Ok(if integer { Value::Int(acc as i64) } else { Value::Float(acc) })
+        Ok(if integer {
+            Value::Int(acc as i64)
+        } else {
+            Value::Float(acc)
+        })
     });
     def(env, "-", |args| {
         if args.is_empty() {
@@ -942,7 +966,11 @@ pub fn register_core(env: &Rc<Env>, ctx: &CoreCtx) {
                 acc -= num_val(a)?;
             }
         }
-        Ok(if integer { Value::Int(acc as i64) } else { Value::Float(acc) })
+        Ok(if integer {
+            Value::Int(acc as i64)
+        } else {
+            Value::Float(acc)
+        })
     });
     def(env, "*", |args| {
         let mut acc = 1f64;
@@ -957,7 +985,11 @@ pub fn register_core(env: &Rc<Env>, ctx: &CoreCtx) {
                 other => return Err(format!("*: не число: {}", fmt_value(other))),
             }
         }
-        Ok(if integer { Value::Int(acc as i64) } else { Value::Float(acc) })
+        Ok(if integer {
+            Value::Int(acc as i64)
+        } else {
+            Value::Float(acc)
+        })
     });
     def(env, "/", |args| {
         if args.len() < 2 {
@@ -1022,7 +1054,10 @@ pub fn register_core(env: &Rc<Env>, ctx: &CoreCtx) {
                 let mut prev = num_val(&args[0])?;
                 for a in &args[1..] {
                     let v = num_val(a)?;
-                    if !(prev $op v) {
+                    // через переменную — чтобы не писать !(a op b) (clippy):
+                    // семантика NaN сохраняется точь-в-точь
+                    let chain_ok = prev $op v;
+                    if !chain_ok {
                         return Ok(Value::Bool(false));
                     }
                     prev = v;

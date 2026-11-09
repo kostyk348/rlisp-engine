@@ -149,7 +149,9 @@ fn skip_ws(b: &[char], pos: &mut usize) {
 
 fn peek(b: &[char], pos: &mut usize) -> Result<char, String> {
     skip_ws(b, pos);
-    b.get(*pos).copied().ok_or_else(|| "json: неожиданный конец".into())
+    b.get(*pos)
+        .copied()
+        .ok_or_else(|| "json: неожиданный конец".into())
 }
 
 fn parse_value(b: &[char], pos: &mut usize) -> Result<Json, String> {
@@ -260,17 +262,18 @@ fn parse_str(b: &[char], pos: &mut usize) -> Result<String, String> {
                             code = code * 16 + h.to_digit(16).ok_or("json: плохая \\u-цифра")?;
                         }
                         // суррогатная пара → UTF-8
-                        if (0xD800..0xDC00).contains(&code) {
-                            if b.get(*pos) == Some(&'\\') && b.get(*pos + 1) == Some(&'u') {
-                                *pos += 2;
-                                let mut lo = 0u32;
-                                for _ in 0..4 {
-                                    let h = b.get(*pos).copied().ok_or("json: \\u не закрыт")?;
-                                    *pos += 1;
-                                    lo = lo * 16 + h.to_digit(16).ok_or("json: плохая \\u-цифра")?;
-                                }
-                                code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+                        if (0xD800..0xDC00).contains(&code)
+                            && b.get(*pos) == Some(&'\\')
+                            && b.get(*pos + 1) == Some(&'u')
+                        {
+                            *pos += 2;
+                            let mut lo = 0u32;
+                            for _ in 0..4 {
+                                let h = b.get(*pos).copied().ok_or("json: \\u не закрыт")?;
+                                *pos += 1;
+                                lo = lo * 16 + h.to_digit(16).ok_or("json: плохая \\u-цифра")?;
                             }
+                            code = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
                         }
                         s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
                     }
@@ -285,7 +288,9 @@ fn parse_str(b: &[char], pos: &mut usize) -> Result<String, String> {
 fn parse_num(b: &[char], pos: &mut usize) -> Result<Json, String> {
     skip_ws(b, pos);
     let start = *pos;
-    while *pos < b.len() && (b[*pos].is_ascii_digit() || matches!(b[*pos], '-' | '+' | '.' | 'e' | 'E')) {
+    while *pos < b.len()
+        && (b[*pos].is_ascii_digit() || matches!(b[*pos], '-' | '+' | '.' | 'e' | 'E'))
+    {
         *pos += 1;
     }
     let s: String = b[start..*pos].iter().collect();

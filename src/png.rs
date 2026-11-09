@@ -10,7 +10,11 @@ fn crc32(data: &[u8]) -> u32 {
     for (i, slot) in table.iter_mut().enumerate() {
         let mut c = i as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *slot = c;
     }
@@ -99,11 +103,14 @@ fn inflate(z: &[u8]) -> Result<Vec<u8>, String> {
         b: &'a [u8],
         pos: usize, // битовая позиция
     }
-    impl<'a> Br<'a> {
+    impl Br<'_> {
         fn bits(&mut self, n: u32) -> Result<u32, String> {
             let mut v = 0u32;
             for i in 0..n {
-                let byte = *self.b.get(self.pos >> 3).ok_or("png: deflate: конец данных")?;
+                let byte = *self
+                    .b
+                    .get(self.pos >> 3)
+                    .ok_or("png: deflate: конец данных")?;
                 let bit = (byte >> (self.pos & 7)) & 1;
                 v |= (bit as u32) << i;
                 self.pos += 1;
@@ -160,10 +167,21 @@ fn inflate(z: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
 
-    const LBASE: [u16; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
-    const LEXT: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-    const DBASE: [u16; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
-    const DEXT: [u8; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+    const LBASE: [u16; 29] = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
+        131, 163, 195, 227, 258,
+    ];
+    const LEXT: [u8; 29] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    ];
+    const DBASE: [u16; 30] = [
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+        2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    ];
+    const DEXT: [u8; 30] = [
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
+        13, 13,
+    ];
 
     let mut br = Br { b: z, pos: 16 }; // пропускаем zlib-заголовок (2 байта)
     loop {
@@ -197,7 +215,9 @@ fn inflate(z: &[u8]) -> Result<Vec<u8>, String> {
                     let hlit = br.bits(5)? as usize + 257;
                     let hdist = br.bits(5)? as usize + 1;
                     let hclen = br.bits(4)? as usize + 4;
-                    const ORD: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+                    const ORD: [usize; 19] = [
+                        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+                    ];
                     let mut cl = [0u8; 19];
                     for i in 0..hclen {
                         cl[ORD[i]] = br.bits(3)? as u8;
@@ -241,28 +261,28 @@ fn inflate(z: &[u8]) -> Result<Vec<u8>, String> {
                 };
                 loop {
                     let sym = lit.decode(&mut br)?;
-                    if sym < 256 {
-                        out.push(sym as u8);
-                    } else if sym == 256 {
-                        break;
-                    } else {
-                        let si = (sym - 257) as usize;
-                        if si >= 29 {
-                            return Err("png: плохой len-символ".into());
-                        }
-                        let len = LBASE[si] as usize + br.bits(LEXT[si] as u32)? as usize;
-                        let dsym = dist.decode(&mut br)? as usize;
-                        if dsym >= 30 {
-                            return Err("png: плохой dist-символ".into());
-                        }
-                        let d = DBASE[dsym] as usize + br.bits(DEXT[dsym] as u32)? as usize;
-                        if d > out.len() {
-                            return Err("png: dist уходит до начала".into());
-                        }
-                        let start = out.len() - d;
-                        for k in 0..len {
-                            let byte = out[start + k];
-                            out.push(byte);
+                    match sym {
+                        0..=255 => out.push(sym as u8),
+                        256 => break,
+                        _ => {
+                            let si = (sym - 257) as usize;
+                            if si >= 29 {
+                                return Err("png: плохой len-символ".into());
+                            }
+                            let len = LBASE[si] as usize + br.bits(LEXT[si] as u32)? as usize;
+                            let dsym = dist.decode(&mut br)? as usize;
+                            if dsym >= 30 {
+                                return Err("png: плохой dist-символ".into());
+                            }
+                            let d = DBASE[dsym] as usize + br.bits(DEXT[dsym] as u32)? as usize;
+                            if d > out.len() {
+                                return Err("png: dist уходит до начала".into());
+                            }
+                            let start = out.len() - d;
+                            for k in 0..len {
+                                let byte = out[start + k];
+                                out.push(byte);
+                            }
                         }
                     }
                 }
@@ -339,7 +359,11 @@ pub fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, usize, usize), String> {
     let raw = inflate(&idat)?;
     let stride = w * channels;
     if raw.len() < h * (stride + 1) {
-        return Err(format!("png: распаковано {} байт, нужно {}", raw.len(), h * (stride + 1)));
+        return Err(format!(
+            "png: распаковано {} байт, нужно {}",
+            raw.len(),
+            h * (stride + 1)
+        ));
     }
     // unfilter
     let mut lines: Vec<Vec<u8>> = Vec::with_capacity(h);
@@ -362,7 +386,13 @@ pub fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, usize, usize), String> {
                     let pa = (p - a as i16).abs();
                     let pb = (p - b as i16).abs();
                     let pc = (p - c as i16).abs();
-                    let pred = if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c };
+                    let pred = if pa <= pb && pa <= pc {
+                        a
+                    } else if pb <= pc {
+                        b
+                    } else {
+                        c
+                    };
                     row[x].wrapping_add(pred)
                 }
                 _ => return Err(format!("png: фильтр {}", ft)),
@@ -373,8 +403,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, usize, usize), String> {
     }
     // → RGBA
     let mut out = vec![0u8; w * h * 4];
-    for y in 0..h {
-        let row = &lines[y];
+    for (y, row) in lines.iter().enumerate() {
         for x in 0..w {
             let o = (y * w + x) * 4;
             match color {

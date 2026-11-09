@@ -39,6 +39,12 @@ pub struct R3 {
     pub culled: u64,
 }
 
+impl Default for R3 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl R3 {
     pub fn new() -> R3 {
         R3 {
@@ -190,10 +196,10 @@ fn tex_lookup(hal: &Hal, id: i64) -> Result<Option<TexRef>, String> {
     }))
 }
 
-/// T&L: world = M_model · v, clip = M_mvp · world (+ uv → u/w, v/w, 1/w).
+/// T&L: world = M_model · v, clip = M_mvp · world
+/// (UV-атрибуты интерполируются отдельно — см. raster_tris/uvq).
 fn transform_all(
     pos: &[f32],
-    uv: Option<&[f32]>,
     model: &[f32],
     mvp: &[f32],
     world: &mut Vec<f32>,
@@ -256,9 +262,7 @@ fn inst_matrix(ins: &[f32], out: &mut [f32; 16]) {
     let r21 = a20 * szi + a21 * cz;
     let r22 = a22;
     // · S и T:
-    for i in 0..16 {
-        out[i] = 0.0;
-    }
+    out.fill(0.0);
     out[0] = r00 * sx;
     out[1] = r01 * sy;
     out[2] = r02 * sz;
@@ -292,13 +296,20 @@ fn mesh_draw(
     texid: i64,
     prim: Prim,
 ) -> Result<u64, String> {
+    // wgpu-режим: 3D-конвейер рисует в fb — сначала сбрасываем отложенный
+    // 2D-слой (порядок художника совпадает с программным растром)
+    let _ = hal.flush_gpu();
     if pos.len() % 3 != 0 || pos.is_empty() {
         return Err("gpu3d: позиции — плоский массив xyz (длина кратна 3)".into());
     }
     let n = pos.len() / 3;
     if let Some(u) = uv {
         if u.len() != n * 2 {
-            return Err(format!("gpu3d: uv — пары на вершину ({}), вершин {}", u.len(), n));
+            return Err(format!(
+                "gpu3d: uv — пары на вершину ({}), вершин {}",
+                u.len(),
+                n
+            ));
         }
     }
     if let Prim::Wire = prim {
@@ -323,7 +334,7 @@ fn mesh_draw(
 
     let mut world = Vec::with_capacity(n * 3);
     let mut clip = Vec::with_capacity(n * 4);
-    transform_all(pos, uv, model, mvp, &mut world, &mut clip);
+    transform_all(pos, model, mvp, &mut world, &mut clip);
 
     let light = {
         let l = r3.light;
@@ -340,14 +351,26 @@ fn mesh_draw(
             let mut seg = [0usize; 2];
             for k in 0..2 {
                 let vi = idx[e * 2 + k];
-                if !(vi >= 0.0) || vi.fract() != 0.0 || (vi as usize) >= n {
+                // через переменную: без !(a >= b) — NaN-семантика прежняя
+                let idx_ok = vi >= 0.0 && vi.fract() == 0.0 && (vi as usize) < n;
+                if !idx_ok {
                     return Err(format!("gpu3d: индекс за границей: {}", vi));
                 }
                 seg[k] = vi as usize;
             }
             let (p, q) = (
-                [clip[seg[0] * 4], clip[seg[0] * 4 + 1], clip[seg[0] * 4 + 2], clip[seg[0] * 4 + 3]],
-                [clip[seg[1] * 4], clip[seg[1] * 4 + 1], clip[seg[1] * 4 + 2], clip[seg[1] * 4 + 3]],
+                [
+                    clip[seg[0] * 4],
+                    clip[seg[0] * 4 + 1],
+                    clip[seg[0] * 4 + 2],
+                    clip[seg[0] * 4 + 3],
+                ],
+                [
+                    clip[seg[1] * 4],
+                    clip[seg[1] * 4 + 1],
+                    clip[seg[1] * 4 + 2],
+                    clip[seg[1] * 4 + 3],
+                ],
             );
             let (pw, qw) = (p[3], q[3]);
             if pw <= 1e-6 && qw <= 1e-6 {
@@ -356,8 +379,18 @@ fn mesh_draw(
             let (pa, qa) = if pw < 1e-6 || qw < 1e-6 {
                 let t = (1e-6 - pw) / (qw - pw);
                 (
-                    [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t, 1e-6],
-                    [q[0] + (p[0] - q[0]) * t, q[1] + (p[1] - q[1]) * t, q[2] + (p[2] - q[2]) * t, 1e-6],
+                    [
+                        p[0] + (q[0] - p[0]) * t,
+                        p[1] + (q[1] - p[1]) * t,
+                        p[2] + (q[2] - p[2]) * t,
+                        1e-6,
+                    ],
+                    [
+                        q[0] + (p[0] - q[0]) * t,
+                        q[1] + (p[1] - q[1]) * t,
+                        q[2] + (p[2] - q[2]) * t,
+                        1e-6,
+                    ],
                 )
             } else {
                 (p, q)
@@ -369,8 +402,22 @@ fn mesh_draw(
         }
     } else {
         raster_tris(
-            fb, r3, w, h, &clip, &world, uv, &idx, None, (r as f32, g as f32, b as f32),
-            ambient, diffuse, &light, tex.as_ref(), &mut drawn, &mut culled,
+            fb,
+            r3,
+            w,
+            h,
+            &clip,
+            &world,
+            uv,
+            idx,
+            None,
+            (r as f32, g as f32, b as f32),
+            ambient,
+            diffuse,
+            &light,
+            tex.as_ref(),
+            &mut drawn,
+            &mut culled,
         )?;
     }
     r3.drawn += drawn;
@@ -390,6 +437,8 @@ fn batch_draw(
     mvp: &[f32],
     texid: i64,
 ) -> Result<u64, String> {
+    // wgpu-режим: сброс отложенного 2D-слоя перед программным 3D-батчем
+    let _ = hal.flush_gpu();
     if pos.len() % 3 != 0 || pos.is_empty() {
         return Err("gpu3d-batch: позиции — плоский xyz".into());
     }
@@ -432,8 +481,6 @@ fn batch_draw(
         let ins = &insts[i * 12..(i + 1) * 12];
         inst_matrix(ins, &mut m);
         let base = i * n;
-        let base3 = base * 3;
-        let base4 = base * 4;
         for vi in 0..n {
             let x = pos[vi * 3];
             let y = pos[vi * 3 + 1];
@@ -456,8 +503,8 @@ fn batch_draw(
             tint.push(ins[10]);
             tint.push(ins[11]);
         }
-        for j in 0..idx.len() {
-            idx_all.push(idx[j] + base as f32);
+        for &j in idx {
+            idx_all.push(j + base as f32);
         }
     }
 
@@ -470,8 +517,22 @@ fn batch_draw(
     let mut drawn: u64 = 0;
     let mut culled: u64 = 0;
     raster_tris(
-        fb, r3, w, h, &clip, &world, if uv.is_some() { Some(&uvq) } else { None }, &idx_all,
-        Some(&tint), (0.0, 0.0, 0.0), ambient, diffuse, &light, tex.as_ref(), &mut drawn, &mut culled,
+        fb,
+        r3,
+        w,
+        h,
+        &clip,
+        &world,
+        if uv.is_some() { Some(&uvq) } else { None },
+        &idx_all,
+        Some(&tint),
+        (0.0, 0.0, 0.0),
+        ambient,
+        diffuse,
+        &light,
+        tex.as_ref(),
+        &mut drawn,
+        &mut culled,
     )?;
     r3.drawn += drawn;
     r3.culled += culled;
@@ -488,7 +549,7 @@ fn raster_tris(
     world: &[f32],
     uvq: Option<&[f32]>,
     idx: &[f32],
-    tint: Option<&[f32]>, // rgb на вершину (батч: цвет инстанса)
+    tint: Option<&[f32]>,   // rgb на вершину (батч: цвет инстанса)
     solid: (f32, f32, f32), // один цвет (обычный mesh)
     ambient: f32,
     diffuse: f32,
@@ -503,7 +564,9 @@ fn raster_tris(
         let mut tri = [0usize; 3];
         for k in 0..3 {
             let vi = idx[f * 3 + k];
-            if !(vi >= 0.0) || vi.fract() != 0.0 || (vi as usize) >= n {
+            // через переменную: без !(a >= b) — NaN-семантика прежняя
+            let idx_ok = vi >= 0.0 && vi.fract() == 0.0 && (vi as usize) < n;
+            if !idx_ok {
                 return Err(format!("gpu3d: индекс за границей: {}", vi));
             }
             tri[k] = vi as usize;
@@ -520,7 +583,15 @@ fn raster_tris(
             } else {
                 (0.0, 0.0)
             };
-            poly.push([clip[t * 4], clip[t * 4 + 1], clip[t * 4 + 2], cw, uq, vq, iw]);
+            poly.push([
+                clip[t * 4],
+                clip[t * 4 + 1],
+                clip[t * 4 + 2],
+                cw,
+                uq,
+                vq,
+                iw,
+            ]);
         }
 
         let poly = if poly.iter().any(|v| v[3] < 1e-6) {
@@ -561,9 +632,21 @@ fn raster_tris(
             }
             // нормаль грани в мире (flat shading)
             let (wa, wb, wc) = (
-                [world[tri[0] * 3], world[tri[0] * 3 + 1], world[tri[0] * 3 + 2]],
-                [world[tri[1] * 3], world[tri[1] * 3 + 1], world[tri[1] * 3 + 2]],
-                [world[tri[2] * 3], world[tri[2] * 3 + 1], world[tri[2] * 3 + 2]],
+                [
+                    world[tri[0] * 3],
+                    world[tri[0] * 3 + 1],
+                    world[tri[0] * 3 + 2],
+                ],
+                [
+                    world[tri[1] * 3],
+                    world[tri[1] * 3 + 1],
+                    world[tri[1] * 3 + 2],
+                ],
+                [
+                    world[tri[2] * 3],
+                    world[tri[2] * 3 + 1],
+                    world[tri[2] * 3 + 2],
+                ],
             );
             let e1 = [wb[0] - wa[0], wb[1] - wa[1], wb[2] - wa[2]];
             let e2 = [wc[0] - wa[0], wc[1] - wa[1], wc[2] - wa[2]];
@@ -582,9 +665,21 @@ fn raster_tris(
             };
 
             let (tw, th) = tex.map(|t| (t.w, t.h)).unwrap_or((0, 0));
-            let cr = if textured { 0u8 } else { col(tr as f64 * shade as f64) };
-            let cg = if textured { 0u8 } else { col(tg as f64 * shade as f64) };
-            let cb = if textured { 0u8 } else { col(tb as f64 * shade as f64) };
+            let cr = if textured {
+                0u8
+            } else {
+                col(tr as f64 * shade as f64)
+            };
+            let cg = if textured {
+                0u8
+            } else {
+                col(tg as f64 * shade as f64)
+            };
+            let cb = if textured {
+                0u8
+            } else {
+                col(tb as f64 * shade as f64)
+            };
 
             // bbox
             let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
@@ -626,8 +721,10 @@ fn raster_tris(
                                     let texel = &t.px[ti..ti + 3];
                                     // lambert · тинт · тексель
                                     fb[o] = col(texel[0] as f64 / 255.0 * tr as f64 * shade as f64);
-                                    fb[o + 1] = col(texel[1] as f64 / 255.0 * tg as f64 * shade as f64);
-                                    fb[o + 2] = col(texel[2] as f64 / 255.0 * tb as f64 * shade as f64);
+                                    fb[o + 1] =
+                                        col(texel[1] as f64 / 255.0 * tg as f64 * shade as f64);
+                                    fb[o + 2] =
+                                        col(texel[2] as f64 / 255.0 * tb as f64 * shade as f64);
                                     fb[o + 3] = 255;
                                 }
                             } else {
@@ -646,6 +743,7 @@ fn raster_tris(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line(fb: &mut [u8], w: usize, h: usize, a: Vtx, b: Vtx, r: u8, g: u8, bl: u8) {
     let steps = ((b.sx - a.sx).abs().max((b.sy - a.sy).abs()).ceil() as usize).clamp(1, 4096);
     for i in 0..=steps {
@@ -666,7 +764,11 @@ fn draw_line(fb: &mut [u8], w: usize, h: usize, a: Vtx, b: Vtx, r: u8, g: u8, bl
 fn check_tex_uv(uv: Option<&[f32]>, n: usize) -> Result<(), String> {
     if let Some(u) = uv {
         if u.len() != n * 2 {
-            return Err(format!("gpu3d: uv — пары на вершину ({}), вершин {}", u.len(), n));
+            return Err(format!(
+                "gpu3d: uv — пары на вершину ({}), вершин {}",
+                u.len(),
+                n
+            ));
         }
     }
     Ok(())
@@ -686,6 +788,9 @@ pub fn register_render3d(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>) {
         let b = col(num_val(&args[2])?);
         let mut h = hc.borrow_mut();
         let (w, hh) = (h.w, h.h);
+        // wgpu-режим: 3D-очистка — программная, но сначала сбрасываем отложенный
+        // 2D-слой, чтобы он не «всплыл» посреди 3D-кадра
+        let _ = h.flush_gpu();
         h.r3.reset(w, hh);
         h.fill_all(r, g, b);
         h.r3.zbuf.fill(f32::INFINITY);
@@ -721,7 +826,19 @@ pub fn register_render3d(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>) {
         let g = num_val(&args[5])?;
         let b = num_val(&args[6])?;
         let mut h = hc.borrow_mut();
-        let n = mesh_draw(&mut h, &pos, None, &idx, &model, &mvp, r, g, b, 0, Prim::Tri)?;
+        let n = mesh_draw(
+            &mut h,
+            &pos,
+            None,
+            &idx,
+            &model,
+            &mvp,
+            r,
+            g,
+            b,
+            0,
+            Prim::Tri,
+        )?;
         Ok(Value::Int(n as i64))
     });
 
@@ -740,7 +857,19 @@ pub fn register_render3d(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>) {
         let b = num_val(&args[8])?;
         check_tex_uv(Some(&uv), pos.len() / 3)?;
         let mut h = hc.borrow_mut();
-        let n = mesh_draw(&mut h, &pos, Some(&uv), &idx, &model, &mvp, r, g, b, texid, Prim::Tri)?;
+        let n = mesh_draw(
+            &mut h,
+            &pos,
+            Some(&uv),
+            &idx,
+            &model,
+            &mvp,
+            r,
+            g,
+            b,
+            texid,
+            Prim::Tri,
+        )?;
         Ok(Value::Int(n as i64))
     });
 
@@ -784,7 +913,19 @@ pub fn register_render3d(env: &Rc<Env>, hal: &Rc<RefCell<Hal>>) {
         let g = num_val(&args[5])?;
         let b = num_val(&args[6])?;
         let mut h = hc.borrow_mut();
-        let n = mesh_draw(&mut h, &pos, None, &idx, &model, &mvp, r, g, b, 0, Prim::Wire)?;
+        let n = mesh_draw(
+            &mut h,
+            &pos,
+            None,
+            &idx,
+            &model,
+            &mvp,
+            r,
+            g,
+            b,
+            0,
+            Prim::Wire,
+        )?;
         Ok(Value::Int(n as i64))
     });
 

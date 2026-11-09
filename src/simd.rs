@@ -17,6 +17,8 @@ use std::time::Instant;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SimdLevel {
+    // на x86_64 Scalar не выбирается (минимум Sse2), но нужен другим архам
+    #[allow(dead_code)]
     Scalar,
     Sse2,
     Avx2,
@@ -27,7 +29,9 @@ pub fn detect() -> SimdLevel {
     #[cfg(target_arch = "x86_64")]
     {
         use std::arch::is_x86_feature_detected;
-        if is_x86_feature_detected!("avx512f") {
+        // AVX-512 код требует поддержки stdarch в компиляторе (stable 1.89+,
+        // см. build.rs: cfg has_avx512). Без неё честно отдаём AVX2.
+        if is_x86_feature_detected!("avx512f") && cfg!(has_avx512) {
             SimdLevel::Avx512
         } else if is_x86_feature_detected!("avx2") {
             SimdLevel::Avx2
@@ -68,7 +72,7 @@ pub fn calibrate() -> SimdLevel {
         if is_x86_feature_detected!("avx2") {
             candidates.push(SimdLevel::Avx2);
         }
-        if is_x86_feature_detected!("avx512f") {
+        if is_x86_feature_detected!("avx512f") && cfg!(has_avx512) {
             candidates.push(SimdLevel::Avx512);
         }
         let mut best = SimdLevel::Sse2;
@@ -107,6 +111,9 @@ pub fn level_name(l: SimdLevel) -> &'static str {
 }
 
 // ——— скалярный fallback (эталон эквивалентности; LLVM может автовекторизовать) ———
+// На x86_64 часть функций не вызывается (там минимум SSE2) — это fallback
+// для других архитектур, оставляем полный набор.
+#[allow(dead_code)]
 pub mod scalar {
     pub fn add(a: &[f32], b: &[f32], out: &mut [f32]) {
         for i in 0..a.len() {
@@ -151,7 +158,10 @@ mod sse {
         while i < n {
             _mm_storeu_ps(
                 out.as_mut_ptr().add(i),
-                _mm_add_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))),
+                _mm_add_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
             );
             i += 4;
         }
@@ -166,7 +176,10 @@ mod sse {
         while i < n {
             _mm_storeu_ps(
                 out.as_mut_ptr().add(i),
-                _mm_sub_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))),
+                _mm_sub_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
             );
             i += 4;
         }
@@ -181,7 +194,10 @@ mod sse {
         while i < n {
             _mm_storeu_ps(
                 out.as_mut_ptr().add(i),
-                _mm_mul_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))),
+                _mm_mul_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
             );
             i += 4;
         }
@@ -196,7 +212,10 @@ mod sse {
         while i < n {
             _mm_storeu_ps(
                 out.as_mut_ptr().add(i),
-                _mm_min_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))),
+                _mm_min_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
             );
             i += 4;
         }
@@ -211,7 +230,10 @@ mod sse {
         while i < n {
             _mm_storeu_ps(
                 out.as_mut_ptr().add(i),
-                _mm_max_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))),
+                _mm_max_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
             );
             i += 4;
         }
@@ -225,7 +247,13 @@ mod sse {
         let mut acc = _mm_setzero_ps();
         let mut i = 0;
         while i < n {
-            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_loadu_ps(a.as_ptr().add(i)), _mm_loadu_ps(b.as_ptr().add(i))));
+            acc = _mm_add_ps(
+                acc,
+                _mm_mul_ps(
+                    _mm_loadu_ps(a.as_ptr().add(i)),
+                    _mm_loadu_ps(b.as_ptr().add(i)),
+                ),
+            );
             i += 4;
         }
         let mut t = [0f32; 4];
@@ -251,7 +279,10 @@ mod avx {
                 let p = i + k * 8;
                 _mm256_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm256_add_ps(_mm256_loadu_ps(a.as_ptr().add(p)), _mm256_loadu_ps(b.as_ptr().add(p))),
+                    _mm256_add_ps(
+                        _mm256_loadu_ps(a.as_ptr().add(p)),
+                        _mm256_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -269,7 +300,10 @@ mod avx {
                 let p = i + k * 8;
                 _mm256_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm256_sub_ps(_mm256_loadu_ps(a.as_ptr().add(p)), _mm256_loadu_ps(b.as_ptr().add(p))),
+                    _mm256_sub_ps(
+                        _mm256_loadu_ps(a.as_ptr().add(p)),
+                        _mm256_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -287,7 +321,10 @@ mod avx {
                 let p = i + k * 8;
                 _mm256_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm256_mul_ps(_mm256_loadu_ps(a.as_ptr().add(p)), _mm256_loadu_ps(b.as_ptr().add(p))),
+                    _mm256_mul_ps(
+                        _mm256_loadu_ps(a.as_ptr().add(p)),
+                        _mm256_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -303,8 +340,20 @@ mod avx {
         let mut acc1 = _mm256_setzero_ps();
         let mut i = 0;
         while i < n {
-            acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(_mm256_loadu_ps(a.as_ptr().add(i)), _mm256_loadu_ps(b.as_ptr().add(i))));
-            acc1 = _mm256_add_ps(acc1, _mm256_mul_ps(_mm256_loadu_ps(a.as_ptr().add(i + 8)), _mm256_loadu_ps(b.as_ptr().add(i + 8))));
+            acc0 = _mm256_add_ps(
+                acc0,
+                _mm256_mul_ps(
+                    _mm256_loadu_ps(a.as_ptr().add(i)),
+                    _mm256_loadu_ps(b.as_ptr().add(i)),
+                ),
+            );
+            acc1 = _mm256_add_ps(
+                acc1,
+                _mm256_mul_ps(
+                    _mm256_loadu_ps(a.as_ptr().add(i + 8)),
+                    _mm256_loadu_ps(b.as_ptr().add(i + 8)),
+                ),
+            );
             i += 16;
         }
         let mut t = [0f32; 8];
@@ -321,7 +370,10 @@ mod avx {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+// AVX-512: интринсики _mm512_* стабилизированы в stable 1.89 (stdarch_x86_avx512).
+// cfg has_avx512 выставляет build.rs по версии rustc — на старых stable модуль
+// исключается, и уровень Avx512 никогда не выбирается (см. detect/calibrate).
+#[cfg(all(target_arch = "x86_64", has_avx512))]
 mod avx512 {
     use std::arch::x86_64::*;
     // разворот ×2: 32 f32 за итерацию
@@ -333,7 +385,10 @@ mod avx512 {
                 let p = i + k * 16;
                 _mm512_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm512_add_ps(_mm512_loadu_ps(a.as_ptr().add(p)), _mm512_loadu_ps(b.as_ptr().add(p))),
+                    _mm512_add_ps(
+                        _mm512_loadu_ps(a.as_ptr().add(p)),
+                        _mm512_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -351,7 +406,10 @@ mod avx512 {
                 let p = i + k * 16;
                 _mm512_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm512_sub_ps(_mm512_loadu_ps(a.as_ptr().add(p)), _mm512_loadu_ps(b.as_ptr().add(p))),
+                    _mm512_sub_ps(
+                        _mm512_loadu_ps(a.as_ptr().add(p)),
+                        _mm512_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -369,7 +427,10 @@ mod avx512 {
                 let p = i + k * 16;
                 _mm512_storeu_ps(
                     out.as_mut_ptr().add(p),
-                    _mm512_mul_ps(_mm512_loadu_ps(a.as_ptr().add(p)), _mm512_loadu_ps(b.as_ptr().add(p))),
+                    _mm512_mul_ps(
+                        _mm512_loadu_ps(a.as_ptr().add(p)),
+                        _mm512_loadu_ps(b.as_ptr().add(p)),
+                    ),
                 );
             }
             i += 32;
@@ -385,8 +446,20 @@ mod avx512 {
         let mut acc1 = _mm512_setzero_ps();
         let mut i = 0;
         while i < n {
-            acc0 = _mm512_add_ps(acc0, _mm512_mul_ps(_mm512_loadu_ps(a.as_ptr().add(i)), _mm512_loadu_ps(b.as_ptr().add(i))));
-            acc1 = _mm512_add_ps(acc1, _mm512_mul_ps(_mm512_loadu_ps(a.as_ptr().add(i + 16)), _mm512_loadu_ps(b.as_ptr().add(i + 16))));
+            acc0 = _mm512_add_ps(
+                acc0,
+                _mm512_mul_ps(
+                    _mm512_loadu_ps(a.as_ptr().add(i)),
+                    _mm512_loadu_ps(b.as_ptr().add(i)),
+                ),
+            );
+            acc1 = _mm512_add_ps(
+                acc1,
+                _mm512_mul_ps(
+                    _mm512_loadu_ps(a.as_ptr().add(i + 16)),
+                    _mm512_loadu_ps(b.as_ptr().add(i + 16)),
+                ),
+            );
             i += 32;
         }
         let s = _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1));
@@ -402,7 +475,11 @@ mod avx512 {
 #[cfg(target_arch = "x86_64")]
 pub fn level_add(l: SimdLevel, a: &[f32], b: &[f32], out: &mut [f32]) {
     match l {
+        // без stdarch avx512 (rustc < 1.89) — тот же профиль на AVX2
+        #[cfg(has_avx512)]
         SimdLevel::Avx512 => unsafe { avx512::add(a, b, out) },
+        #[cfg(not(has_avx512))]
+        SimdLevel::Avx512 => unsafe { avx::add(a, b, out) },
         SimdLevel::Avx2 => unsafe { avx::add(a, b, out) },
         SimdLevel::Sse2 => unsafe { sse::add(a, b, out) },
         SimdLevel::Scalar => scalar::add(a, b, out),
@@ -431,7 +508,6 @@ fn dispatch2(a: &[f32], b: &[f32], out: &mut [f32], op: u8) {
                 m(a, b, out);
             },
         }
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -458,12 +534,22 @@ fn sse_if(op: u8) -> unsafe fn(&[f32], &[f32], &mut [f32]) {
         _ => sse::add,
     }
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", has_avx512))]
 fn avx512_if(op: u8) -> unsafe fn(&[f32], &[f32], &mut [f32]) {
     match op {
         1 => avx512::sub,
         2 => avx512::mul,
         _ => avx512::add,
+    }
+}
+#[cfg(all(target_arch = "x86_64", not(has_avx512)))]
+fn avx512_if(op: u8) -> unsafe fn(&[f32], &[f32], &mut [f32]) {
+    // rustc < 1.89: уровень Avx512 не выбирается (detect), а если всё же
+    // пришёл — считаем на AVX2, ничего не ломается
+    match op {
+        1 => avx::sub,
+        2 => avx::mul,
+        _ => avx::add,
     }
 }
 
@@ -480,7 +566,6 @@ pub fn vmin(a: &[f32], b: &[f32], out: &mut [f32]) {
     #[cfg(target_arch = "x86_64")]
     {
         unsafe { sse::min(a, b, out) };
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -491,7 +576,6 @@ pub fn vmax(a: &[f32], b: &[f32], out: &mut [f32]) {
     #[cfg(target_arch = "x86_64")]
     {
         unsafe { sse::max(a, b, out) };
-        return;
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -503,9 +587,12 @@ pub fn vdot(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         match active_level() {
+            #[cfg(has_avx512)]
             SimdLevel::Avx512 => return unsafe { avx512::dot(a, b) },
-            SimdLevel::Avx2 => return unsafe { avx::dot(a, b) },
-            _ => return unsafe { sse::dot(a, b) },
+            #[cfg(not(has_avx512))]
+            SimdLevel::Avx512 => unsafe { avx::dot(a, b) },
+            SimdLevel::Avx2 => unsafe { avx::dot(a, b) },
+            _ => unsafe { sse::dot(a, b) },
         }
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -525,7 +612,11 @@ fn timed<F: FnMut()>(iters: usize, mut f: F) -> f64 {
 }
 
 pub fn bench_run() {
-    println!("обнаружено по флагам: {}; выбрано калибровкой: {}", level_name(detect()), level_name(active_level()));
+    println!(
+        "обнаружено по флагам: {}; выбрано калибровкой: {}",
+        level_name(detect()),
+        level_name(active_level())
+    );
 
     // Тест A: большой массив — упор в пропускную способность памяти
     // (честно показываем, где SIMD не помогает: риск из ТЗ §13).
@@ -629,7 +720,12 @@ fn binop(env: &Rc<Env>, name: &str, f: for<'a> fn(&'a [f32], &'a [f32], &'a mut 
                 let a = to_f32s(&args[0])?;
                 let b = to_f32s(&args[1])?;
                 if a.len() != b.len() {
-                    return Err(format!("{}: длины не равны ({} и {})", name_s, a.len(), b.len()));
+                    return Err(format!(
+                        "{}: длины не равны ({} и {})",
+                        name_s,
+                        a.len(),
+                        b.len()
+                    ));
                 }
                 let mut o = vec![0f32; a.len()];
                 f(&a, &b, &mut o);
@@ -730,7 +826,8 @@ pub fn register_simd(env: &Rc<Env>) {
         // v0.2: согласовано с mat4-mul — теперь o = M·v (row-major, вектор-столбец).
         // Раньше считалось v·M (транспонированно), что ломало композицию матриц.
         for i in 0..4 {
-            o[i] = m[i * 4] * v[0] + m[i * 4 + 1] * v[1] + m[i * 4 + 2] * v[2] + m[i * 4 + 3] * v[3];
+            o[i] =
+                m[i * 4] * v[0] + m[i * 4 + 1] * v[1] + m[i * 4 + 2] * v[2] + m[i * 4 + 3] * v[3];
         }
         Ok(ret_f32(o.to_vec()))
     });
