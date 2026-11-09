@@ -104,12 +104,12 @@
 ;; ——— буферы и accessors ———
 
 ;; буфер glTF → f32-вектор байтов: data-URI (base64) или внешний .bin
-(define (gltf-buffer-bytes buf)
+(define (gltf-buffer-bytes base buf)
   (let ((uri (table-get buf "uri" #f)))
     (cond ((not uri)
            (error "gltf: buffer без uri (.glb-контейнер не поддерживается)"))
           ((string=? (gltf-prefix uri 5) "data:") (base64-decode uri))
-          (else (file-read-bytes uri)))))
+          (else (file-read-bytes (string-append base uri))))))
 
 ;; accessor → F32Vec плоских компонентов (count × comps)
 (define (gltf-acc doc bufs acc)
@@ -319,7 +319,7 @@
              (ver (table-get (table-get doc "asset" (make-table))
                              "version" ""))
              (base (gltf-dir path))
-             (bufs (map gltf-buffer-bytes
+             (bufs (map (lambda (b) (gltf-buffer-bytes base b))
                         (table-get doc "buffers" '())))
              (mesh-lists '()))
         (if (= (string-length ver) 0)
