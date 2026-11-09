@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: test (default features, zero deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Ноль зависимостей — правило репозитория. Cargo.lock содержит и
+      # опциональный граф wgpu (optional-зависимости резолвятся всегда),
+      # поэтому честная проверка — cargo tree по включённым фичам:
+      # в дефолтной сборке виден только корень.
+      - name: ноль зависимостей в дефолтной сборке
+        run: |
+          n=$(cargo tree -e normal --prefix none | wc -l)
+          echo "пакетов в дефолтном графе: $n"
+          test "$n" -eq 1 || { echo "FAIL: дефолтная сборка тянет зависимости"; cargo tree -e normal; exit 1; }
+      - run: cargo build --release
+      - run: cargo test
+
+  wgpu:
+    name: wgpu feature (check + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wgpu
+      - run: cargo check --features wgpu
+      # адаптера на раннере нет — тесты фолбэка обязаны проходить и без него
+      - run: cargo test --features wgpu
+
+  smoke:
+    name: smoke.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: bash scripts/smoke.sh

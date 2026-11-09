@@ -316,6 +316,7 @@ struct Quad {
 }
 
 #[cfg(feature = "wgpu")]
+#[allow(clippy::too_many_arguments)]
 fn quad_verts(
     x0: i64,
     y0: i64,
@@ -332,8 +333,8 @@ fn quad_verts(
     let ndc_y = |py: f32| 1.0 - py / h as f32 * 2.0;
     let (ax0, ay0) = (ndc_x(x0 as f32), ndc_y(y0 as f32));
     let (ax1, ay1) = (ndc_x((x0 + dw) as f32), ndc_y((y0 + dh) as f32));
-    let (u0, v0) = uv0;
-    let (u1, v1) = uv1;
+    let [u0, v0] = uv0;
+    let [u1, v1] = uv1;
     let mut v: Vec<f32> = Vec::with_capacity(48);
     let mut push = |x: f32, y: f32, u: f32, vv: f32| {
         v.extend_from_slice(&[x, y, u, vv, tint[0], tint[1], tint[2], 0.0]);
@@ -386,7 +387,10 @@ pub struct WgpuRenderer {
 #[cfg(feature = "wgpu")]
 impl WgpuRenderer {
     pub fn new(w: usize, h: usize) -> Result<WgpuRenderer, String> {
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
@@ -400,8 +404,8 @@ impl WgpuRenderer {
         let (device, queue) = block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("rlisp-hal"),
-                features: wgpu::Features::empty(),
-                limits: wgpu::Limits::default(),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
             },
             None,
         ))
@@ -455,18 +459,20 @@ impl WgpuRenderer {
                 },
             ],
         };
-        let mut make_pipeline = |fs: &str, layout: &wgpu::PipelineLayout| {
+        let make_pipeline = |fs: &str, layout: &wgpu::PipelineLayout| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fs),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &module,
                     entry_point: "vs_main",
+                    compilation_options: Default::default(),
                     buffers: &[vlayout.clone()],
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: fs,
+                    compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: wgpu::TextureFormat::Rgba8Unorm,
                         // блендинг выключен: покрытие учитывается на композите
@@ -503,16 +509,26 @@ impl WgpuRenderer {
             ..Default::default()
         });
 
+        // offscreen-таргет и readback создаются до перемещения device в структуру
+        let target = device.create_texture(&Self::target_desc(w, h));
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rlisp-readback"),
+            size: (Self::pad_rows(w) * h) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vbuf_dummy = Self::dummy_buffer(&device);
+        let readback_pad = Self::pad_rows(w);
         let mut r = WgpuRenderer {
             device,
             queue,
             adapter: adapter_desc,
-            target: wgpu::Texture::null(),
-            target_w: 0,
-            target_h: 0,
-            readback: Self::dummy_buffer(&device),
-            readback_pad: 0,
-            vbuf: Self::dummy_buffer(&device),
+            target,
+            target_w: w,
+            target_h: h,
+            readback,
+            readback_pad,
+            vbuf: vbuf_dummy,
             vcap: 0,
             pipeline_solid,
             pipeline_tex,
@@ -524,7 +540,7 @@ impl WgpuRenderer {
             vused: 0,
             pending: 0,
         };
-        r.resize(w, h);
+        r.vbuf = r.make_vbuf();
         Ok(r)
     }
 
@@ -537,8 +553,44 @@ impl WgpuRenderer {
         })
     }
 
+    fn make_vbuf(&self) -> wgpu::Buffer {
+        // стартовая ёмкость: 1 МБ ≈ 32 тыс. вершин (растёт по потребности)
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rlisp-quads"),
+            size: 1 << 20,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
     fn pad_rows(w: usize) -> usize {
         (w * 4).div_ceil(256) * 256
+    }
+
+    fn target_desc(w: usize, h: usize) -> wgpu::TextureDescriptor<'static> {
+        wgpu::TextureDescriptor {
+            label: Some("rlisp-offscreen"),
+            size: wgpu::Extent3d {
+                width: w as u32,
+                height: h as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        }
+    }
+
+    fn make_readback(&self, w: usize, h: usize) -> wgpu::Buffer {
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rlisp-readback"),
+            size: (Self::pad_rows(w) * h) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn ensure_enc(&mut self) -> &mut wgpu::CommandEncoder {
@@ -585,32 +637,43 @@ impl WgpuRenderer {
         let view = self
             .target
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let enc = self.ensure_enc();
+        // ссылки до заимствования энкодера — энкодер забираем из self,
+        // чтобы borrow'и не пересекались
+        let pipe = if solid {
+            &self.pipeline_solid
+        } else {
+            &self.pipeline_tex
+        };
+        let range = self.vused as u64..(self.vused + 48 * 4) as u64;
+        let mut enc = self.enc.take().unwrap_or_else(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rlisp-frame"),
+                })
+        });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rlisp-quad"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load, store: true },
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
-                depth_stencil: None,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
-            if solid {
-                pass.set_pipeline(&self.pipeline_solid);
-            } else {
-                pass.set_pipeline(&self.pipeline_tex);
-                if let Some(bg) = bind {
-                    pass.set_bind_group(0, bg, &[]);
-                }
+            pass.set_pipeline(pipe);
+            if let Some(bg) = bind {
+                pass.set_bind_group(0, bg, &[]);
             }
-            pass.set_vertex_buffer(
-                0,
-                self.vbuf
-                    .slice(self.vused as u64..(self.vused + 48 * 4) as u64),
-            );
+            pass.set_vertex_buffer(0, self.vbuf.slice(range));
             pass.draw(0..6, 0..1);
         }
+        self.enc = Some(enc);
         self.vused += 48 * 4;
         self.pending += 1;
     }
@@ -645,29 +708,11 @@ impl GpuBackend for WgpuRenderer {
         if w == self.target_w && h == self.target_h {
             return;
         }
-        self.target = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rlisp-offscreen"),
-            size: wgpu::Extent3d {
-                width: w as u32,
-                height: h as u32,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        self.target = self.device.create_texture(&Self::target_desc(w, h));
         self.target_w = w;
         self.target_h = h;
         self.readback_pad = Self::pad_rows(w);
-        self.readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rlisp-readback"),
-            size: (self.readback_pad * h) as u64,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        self.readback = self.make_readback(w, h);
         self.enc = None;
         self.vused = 0;
         self.pending = 0;
@@ -691,10 +736,12 @@ impl GpuBackend for WgpuRenderer {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(color),
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil: None,
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
         }); // пустой pass с loadOp=Clear — и есть очистка
         self.pending += 1;
     }
@@ -832,10 +879,10 @@ impl GpuBackend for WgpuRenderer {
         dh: i64,
         tint: [f32; 3],
     ) -> Result<(), String> {
-        let Some((t, tw, th)) = self.texs.get(&id) else {
+        let Some((t, tex_w, tex_h)) = self.texs.get(&id) else {
             return Err(format!("gpu-blit-tex: нет текстуры {} на GPU", id));
         };
-        let (tw, th) = (*tw as usize, *th as usize);
+        let _ = (tex_w, tex_h); // размеры текстуры — uv уже нормирован по dw/dh
         let view = t.create_view(&wgpu::TextureViewDescriptor::default());
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rlisp-blit-tex-bind"),
@@ -851,11 +898,11 @@ impl GpuBackend for WgpuRenderer {
                 },
             ],
         });
-        let (tw32, th32) = (tw, th);
-        let dwh = self.target;
-        let (tw_t, th_t) = (self.target_w, self.target_h);
         let (dx0, dy0) = (x.max(0), y.max(0));
-        let (dx1, dy1) = ((x + dw).min(tw_t as i64), (y + dh).min(th_t as i64));
+        let (dx1, dy1) = (
+            (x + dw).min(self.target_w as i64),
+            (y + dh).min(self.target_h as i64),
+        );
         if dx0 >= dx1 || dy0 >= dy1 || dw <= 0 || dh <= 0 {
             return Ok(());
         }
@@ -863,20 +910,18 @@ impl GpuBackend for WgpuRenderer {
         let v0 = (dy0 - y) as f32 / dh as f32;
         let u1 = (dx1 - x) as f32 / dw as f32;
         let v1 = (dy1 - y) as f32 / dh as f32;
-        let _ = dwh;
         let q = quad_verts(
             dx0,
             dy0,
             dx1 - dx0,
             dy1 - dy0,
-            tw_t,
-            th_t,
+            self.target_w,
+            self.target_h,
             [u0, v0],
             [u1, v1],
             tint,
         );
-        let _ = (tw32, th32);
-        self.record(tw_t, th_t, q, false, Some(&bg));
+        self.record(self.target_w, self.target_h, q, false, Some(&bg));
         Ok(())
     }
 
@@ -963,18 +1008,26 @@ impl GpuBackend for WgpuRenderer {
                 let _ = tx.send(res);
             });
         self.device.poll(wgpu::Maintain::Wait);
-        if let Err(e) = rx.recv().unwrap_or(Err(wgpu::Error::Validation {
-            source: "map не завершился".into(),
-            description: String::new(),
-        })) {
+        // callback кладёт Ok(()) или Err(BufferAsyncError); канал закрывается
+        // только если поток умер — в обоих случаях fb не трогаем
+        let mapped = match rx.recv() {
+            Ok(r) => r,
+            Err(_) => {
+                eprintln!("[wgpu] readback: map-канал закрылся");
+                self.vused = 0;
+                self.pending = 0;
+                return (submit_ns, t1.elapsed().as_nanos());
+            }
+        };
+        if let Err(e) = mapped {
             // readback не удался — кадр отдаём как есть (fb не трогаем)
-            eprintln!("[wgpu] readback: {:?}", e);
+            eprintln!("[wgpu] readback: {}", e);
             self.vused = 0;
             self.pending = 0;
             return (submit_ns, t1.elapsed().as_nanos());
         }
         {
-            let view = self.readback.get_mapped_range(..);
+            let view = self.readback.slice(..).get_mapped_range();
             composite_readback(
                 fb,
                 w.min(self.target_w),
@@ -1013,10 +1066,12 @@ impl WgpuRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil: None,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
             });
         }
         self.queue.submit([enc.finish()]);
