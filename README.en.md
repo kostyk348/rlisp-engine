@@ -426,11 +426,19 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
 ## Demo: Island (stage 8, branch stage8/island)
 
 assets/lisp/island.lisp — animated water (3 sine waves, specular material),
-radial heightfield island, 16 trees with alpha-tested canopies, rocks, warm
-light and sky-colored fog, plus glTF models WaterBottle and Lantern
-(CC0-1.0, KhronosGroup/glTF-Sample-Assets). The model pipeline is
+a heightfield island with sand/grass/rock bands (one vertex buffer, three
+index sets, dithered boundaries), a beach as a radial ring with a dithered
+inner edge, 18 trees (batched trunks + 3-layer crossed-quad canopies with
+alpha-test), rocks, warm light and sky-colored fog, plus glTF models
+WaterBottle and Lantern (CC0-1.0, KhronosGroup/glTF-Sample-Assets) — model
+scale is normalized by bounding box (outlier service meshes such as the
+Lantern's 25-unit "light" are discarded). The model pipeline is
 load-gltf.lisp (a subset of glTF 2.0 ASCII on top of zero-dependency
 natives json-parse / base64-decode / file-read-bytes / texture-load-png).
-Headless measurement: 45.9 fps at 320x240 (--fast). Artifacts:
+Headless measurement: 40.9 fps at 320x240 (--fast). Artifacts:
 demo/island.gif, demo/island_filmstrip.png. Asset provenance and licenses:
 docs/credits.md; subset limitations: LIMITATIONS.md.
+
+Also fixed in revision 2: the scene never called `gpu3d-clear`, so the
+previous frame's z-buffer "ate" the next one (geometry vanished behind
+stale depth).
