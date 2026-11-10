@@ -133,8 +133,8 @@ impl Skeleton {
             };
             let _ = i;
             out.extend_from_slice(&[
-                w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], 0.0,
-                0.0, 0.0, 1.0,
+                w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], 0.0, 0.0,
+                0.0, 1.0,
             ]);
             worlds.push(w);
         }
@@ -147,14 +147,11 @@ fn mul_aff(w: &Aff, l: &Aff) -> Aff {
     let mut r = [0.0f32; 12];
     for row in 0..3 {
         for col in 0..3 {
-            r[row * 4 + col] = w[row * 4] * l[col]
-                + w[row * 4 + 1] * l[4 + col]
-                + w[row * 4 + 2] * l[8 + col];
+            r[row * 4 + col] =
+                w[row * 4] * l[col] + w[row * 4 + 1] * l[4 + col] + w[row * 4 + 2] * l[8 + col];
         }
-        r[row * 4 + 3] = w[row * 4] * l[3]
-            + w[row * 4 + 1] * l[7]
-            + w[row * 4 + 2] * l[11]
-            + w[row * 4 + 3];
+        r[row * 4 + 3] =
+            w[row * 4] * l[3] + w[row * 4 + 1] * l[7] + w[row * 4 + 2] * l[11] + w[row * 4 + 3];
     }
     r
 }
@@ -356,7 +353,11 @@ mod tests {
         let mut out = Vec::new();
         s.matrices(&mut out);
         let m = &out[child as usize * 16..child as usize * 16 + 16];
-        assert!(approx(m[3], 2.0), "масштаб родителя носит позицию: {}", m[3]);
+        assert!(
+            approx(m[3], 2.0),
+            "масштаб родителя носит позицию: {}",
+            m[3]
+        );
     }
 
     #[test]

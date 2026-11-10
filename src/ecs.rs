@@ -144,6 +144,82 @@ impl Ecs {
         self.alive_n
     }
 
+    /// Этап 17: bulk-скан — строки [хендл, v1, v2, …] для живых сущностей со
+    /// ВСЕМИ компонентами (порядок слотов — детерминизм). Проекция значений
+    /// клонируется (Value — Rc-обёртки, дешёво для таблиц/списков).
+    pub fn rows(&self, names: &[&str]) -> Vec<Vec<V>> {
+        let mut ids = Vec::with_capacity(names.len());
+        for n in names {
+            match self.name_id(n) {
+                Some(i) => ids.push(i),
+                None => return Vec::new(),
+            }
+        }
+        let mut out = Vec::new();
+        for s in 0..self.alive.len() {
+            if !self.alive[s] {
+                continue;
+            }
+            let row = self.comps[s][ids[0]].clone();
+            let Some(first) = row else { continue };
+            let mut rec = Vec::with_capacity(1 + ids.len());
+            rec.push(V::Int(pack(s, self.gen[s]) as i64));
+            rec.push(first);
+            for &id in &ids[1..] {
+                match self.comps[s][id].clone() {
+                    Some(v) => rec.push(v),
+                    None => {
+                        rec.clear();
+                        break;
+                    }
+                }
+            }
+            if !rec.is_empty() {
+                out.push(rec);
+            }
+        }
+        out
+    }
+
+    /// Этап 17: проекция одного компонента по всем живым сущностям
+    pub fn col(&self, name: &str) -> Vec<V> {
+        let Some(id) = self.name_id(name) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for s in 0..self.alive.len() {
+            if self.alive[s] {
+                if let Some(v) = self.comps[s][id].clone() {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
+    /// Этап 17: убить всех (пул слотов сохраняется; следующая make! начнёт
+    /// с НАИМЕНЬШЕГО слота — детерминизм переиспользования)
+    pub fn clear(&mut self) {
+        for s in (0..self.alive.len()).rev() {
+            if self.alive[s] {
+                self.alive[s] = false;
+                self.gen[s] = self.gen[s].wrapping_add(1);
+                if !self.free.contains(&(s as u32)) {
+                    self.free.push(s as u32);
+                }
+                for c in self.comps[s].iter_mut() {
+                    *c = None;
+                }
+            }
+        }
+        self.alive_n = 0;
+    }
+
+    /// Этап 17: (живые, слоты всего, зарегистрированных компонентов)
+    pub fn stats(&self) -> (usize, usize, usize) {
+        (self.alive_n, self.alive.len(), self.names.len())
+    }
+
     /// имена компонентов живой сущности (для интроспекции)
     pub fn comps_of(&self, h: u64) -> Vec<String> {
         let Some(s) = self.slot_of(h) else {
@@ -272,6 +348,42 @@ pub fn register(env: crate::interp::Gc, store: Rc<RefCell<Vec<Ecs>>>) {
         Ok(V::Int(ecs_of(&st, &args[0])?.count() as i64))
     });
 
+    // (ecs-each e "a" "b" …) → строки [хендл v1 v2 …] живых со всеми компонентами
+    let st = store.clone();
+    def(env, "ecs-each", move |args| {
+        need(args, 2)?;
+        let names: Vec<String> = args[1..].iter().map(str_of).collect::<Result<_, _>>()?;
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let rows = ecs_of(&st, &args[0])?.rows(&refs);
+        Ok(V::List(rows.into_iter().map(V::List).collect()))
+    });
+
+    let st = store.clone();
+    def(env, "ecs-col", move |args| {
+        need(args, 2)?;
+        let name = str_of(&args[1])?;
+        Ok(V::List(ecs_of(&st, &args[0])?.col(&name)))
+    });
+
+    let st = store.clone();
+    def(env, "ecs-clear!", move |args| {
+        need(args, 1)?;
+        ecs_of(&st, &args[0])?.clear();
+        Ok(V::Nil)
+    });
+
+    // (ecs-stats e) → (живые слоты компоненты)
+    let st = store.clone();
+    def(env, "ecs-stats", move |args| {
+        need(args, 1)?;
+        let (a, s, c) = ecs_of(&st, &args[0])?.stats();
+        Ok(V::List(vec![
+            V::Int(a as i64),
+            V::Int(s as i64),
+            V::Int(c as i64),
+        ]))
+    });
+
     let st = store.clone();
     def(env, "ecs-comps", move |args| {
         need(args, 2)?;
@@ -361,6 +473,70 @@ mod tests {
         assert_eq!(get_int(&e, h, "hp"), None);
         assert!(!e.del(h, "hp"));
         assert!(e.comps_of(h).is_empty());
+    }
+
+    #[test]
+    fn rows_projection_and_order() {
+        let mut e = Ecs::new();
+        let mut hs = Vec::new();
+        for k in 0..4u64 {
+            let h = e.make();
+            e.set(h, "hp", V::Int(10 + k as i64)).unwrap();
+            if k % 2 == 0 {
+                e.set(h, "tag", V::Str(format!("t{}", k))).unwrap();
+            }
+            hs.push(h);
+        }
+        // все с hp+tag: только чётные, порядок слотов
+        let rows = e.rows(&["hp", "tag"]);
+        assert_eq!(rows.len(), 2);
+        let row_at = |r: &Vec<Vec<V>>, k: usize, i: usize| -> i64 {
+            match &r[k][i] {
+                V::Int(v) => *v,
+                _ => panic!("строка не Int"),
+            }
+        };
+        let str_at = |r: &Vec<Vec<V>>, k: usize, i: usize| -> String {
+            match &r[k][i] {
+                V::Str(v) => v.clone(),
+                _ => panic!("строка не Str"),
+            }
+        };
+        assert_eq!(row_at(&rows, 0, 0), hs[0] as i64);
+        assert_eq!(row_at(&rows, 0, 1), 10);
+        assert_eq!(str_at(&rows, 0, 2), "t0");
+        assert_eq!(str_at(&rows, 1, 2), "t2");
+        // проекция одного компонента — значения в порядке слотов
+        let col = e.col("hp");
+        let col_int: Vec<i64> = col
+            .iter()
+            .map(|v| match v {
+                V::Int(i) => *i,
+                _ => panic!("col не Int"),
+            })
+            .collect();
+        assert_eq!(col_int, vec![10, 11, 12, 13]);
+        assert!(e.col("нет").is_empty());
+        // после смерти одной — сужается
+        e.kill(hs[3]);
+        assert_eq!(e.col("hp").len(), 3);
+    }
+
+    #[test]
+    fn clear_and_stats() {
+        let mut e = Ecs::new();
+        for k in 0..3 {
+            let h = e.make();
+            e.set(h, "hp", V::Int(k)).unwrap();
+        }
+        assert_eq!(e.stats(), (3, 3, 1));
+        e.clear();
+        assert_eq!(e.stats(), (0, 3, 1), "слоты и реестр компонентов живы");
+        assert!(e.query(&["hp"]).is_empty());
+        // пул слотов переиспользуется без роста
+        let h = e.make();
+        assert_eq!(h & 0xFFFF_FFFF, 0, "первый слот переиспользован");
+        assert_eq!(e.count(), 1);
     }
 
     #[test]

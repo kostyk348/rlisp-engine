@@ -6,6 +6,7 @@
 #![allow(unknown_lints)]
 #![allow(clippy::manual_is_multiple_of)]
 
+mod assets;
 mod audio;
 mod ecs;
 mod editor;
@@ -205,6 +206,7 @@ pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     ecs::register(env, Rc::new(RefCell::new(Vec::new())));
     particles::register(env, Rc::new(RefCell::new(Vec::new())));
     skel::register(env, Rc::new(RefCell::new(Vec::new())));
+    assets::register(env, Rc::new(RefCell::new(Vec::new())));
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
