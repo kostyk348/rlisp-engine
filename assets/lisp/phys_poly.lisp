@@ -443,7 +443,7 @@
     mvp))
 
 (define (draw-hud)
-  (draw-text "PHYS POLY  STAGE12 NGS" 6 5 1 (list 1 1 1))
+  (draw-text "PHYS POLY  STAGE 15–18" 6 5 1 (list 1 1 1))
   (draw-text (string-append "BODIES " (number->string (phys-n *phys*))
                             "  TRIS " (number->string *tris-total*))
              6 13 1 (list 0.6 0.7 0.85))

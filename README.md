@@ -1,10 +1,26 @@
 # rlisp-engine
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
+![Tests](https://img.shields.io/badge/tests-98%20passing-7ee787)
+![Deps](https://img.shields.io/badge/dependencies-0-critical)
 [![Pages](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml)
 [English](README.en.md) | Русский
 
 **Игровой движок как Lisp-машина: Rust только как HAL, всё остальное — DSL.**
+**Сайт:** [kostyk348.github.io/rlisp-engine](https://kostyk348.github.io/rlisp-engine/) · **Песочница в браузере:** [playground.html](https://kostyk348.github.io/rlisp-engine/playground.html) — весь движок в WASM, открывается как файл.
+
+| | |
+|---|---|
+| 🚀 **JIT числовых ядер** | до **234×** на смешанном ядре (cond/let*/min/max/floor в машинный код), паритет с интерпретатором по битам |
+| 🎱 **NGS-физика** | честное качение: трение в точке контакта с угловой связью, склоны без накачки энергии, побитовый детерминизм |
+| 🦴 **Скелет + частицы** | иерархия костей → `gpu3d-batch-mat`; пул 4096 частиц с LCG-детерминизмом |
+| 🧩 **ECS в ядре** | слоты+поколения (зомби-хендлы невозможны), bulk-запросы `ecs-each/col` |
+| 📦 **Ассеты** | именованный реестр с типами и рефкаунтами, явная сборка `asset-gc!` |
+| 🛠️ **Редактор + MCP** | гизмо в живой игре, hot reload, AI Ready (Model Context Protocol) |
+| 🌐 **Песочница** | весь движок в ~1 МБ WASM: редактор, REPL, звук — ноль сети после загрузки |
+
+![Физполигон](demo/physpoly.gif)
 
 Прототип по [ТЗ v1.0](#): движок не содержит игровых систем — он содержит только
 доступ к «железу». Рендерер, физика, ECS, ввод, текстуры, редактор, MCP —
@@ -419,6 +435,22 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
    символов, pshufb-классификация.
 6. JIT для eval (ТЗ §10.1) — числовые ядра сделаны в этапе 3 (49×);
    расширение покрытия — следующий шаг.
+
+## Этапы 15–18 (v0.13): JIT-покрытие, скелет, прокачанное ECS, ассеты
+
+- **JIT**: расширение компилятора — `cond` (цепочка клаузов с else),
+  `let*` (последовательные привязки), `min`/`max` (свёртка),
+  `abs`/`sqrt`/`floor` как формы → машинный код (roundsd, sqrtsd, minsd/maxsd).
+  Свойственный тест: 3000 случайных выражений — паритет с интерпретатором
+  по битам; смешанное ядро — **≈234×** (20059 → 86 нс/вызов).
+- **Скелет**: `src/skel.rs` — кости с эйлерами (тот же порядок, что у
+  инстансов батча), композиция parent·local, `skel-matrices!`/`skel-batch!`
+  → новый натив `gpu3d-batch-mat` (готовая матрица 4×4 + цвет на инстанс).
+  В сцене кроны пальм гнутся под ветром (28 костей).
+- **ECS**: `ecs-each` (bulk-строки [хендл, значения…]), `ecs-col` (проекция),
+  `ecs-clear!`, `ecs-stats`.
+- **Ассеты**: `src/assets.rs` — реестр с типами и рефкаунтами: put!/ref!/
+  release!/gc!, typed-get, переиспользование слотов после явной сборки.
 
 ## Физика: NGS-солвер, ECS в ядре, частицы (этапы 12–14, v0.12)
 
