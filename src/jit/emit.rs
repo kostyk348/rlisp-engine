@@ -76,6 +76,17 @@ impl Emitter {
         self.emit_u32(0);
     }
 
+    /// |x|: маска грузится через movsd в xmm1 (movsd — unaligned-safe;
+    /// прямой andpd с памятью требует выравнивания 16 и даёт #GP), затем
+    /// регистровый andpd: старшие 64 бита обнулены movsd — для double безвредно
+    fn op_abs(&mut self, idx: usize) {
+        let off = self.emit(&[0xF2, 0x0F, 0x10, 0x0D]); // movsd xmm1,[rip+d32]
+        let disp = off + 4;
+        self.fixups.push(Fix::Const(disp, idx));
+        self.emit_u32(0);
+        self.emit(&[0x66, 0x0F, 0x54, 0xC1]); // andpd xmm0, xmm1
+    }
+
     fn op_arg(&mut self, k: usize) {
         let d = k * 8;
         if d <= 127 {
@@ -273,6 +284,9 @@ pub fn emit(ir: &[IrOp], consts: &[f64], arity: usize) -> Option<JitFn> {
     let mut all_consts: Vec<f64> = consts.to_vec();
     let nan_idx = all_consts.len();
     all_consts.push(f64::NAN);
+    let abs_idx = all_consts.len();
+    // маска |x|: 0x7FFF…FFFF (знаковый бит снят andpd)
+    all_consts.push(f64::from_bits(0x7FFF_FFFF_FFFF_FFFF));
     let end_ir = ir.len();
     let mut e = Emitter::new();
     for (i, op) in ir.iter().enumerate() {
@@ -292,6 +306,19 @@ pub fn emit(ir: &[IrOp], consts: &[f64], arity: usize) -> Option<JitFn> {
                 e.op_bin(op, nan_idx, end_ir)
             }
             IrOp::CmpLt | IrOp::CmpEq | IrOp::CmpGt | IrOp::CmpLe | IrOp::CmpGe => e.op_cmp(op),
+            IrOp::UnFloor => {
+                e.emit(&[0x66, 0x0F, 0x3A, 0x0B, 0xC0, 0x01]); // roundsd imm=1
+            }
+            IrOp::UnSqrt => {
+                e.emit(&[0xF2, 0x0F, 0x51, 0xC0]); // sqrtsd
+            }
+            IrOp::UnAbs => e.op_abs(abs_idx),
+            IrOp::Min => {
+                e.emit(&[0xF2, 0x0F, 0x5D, 0xC1]); // minsd xmm0, xmm1
+            }
+            IrOp::Max => {
+                e.emit(&[0xF2, 0x0F, 0x5F, 0xC1]); // maxsd
+            }
             IrOp::Branch {
                 cond,
                 then_ir,

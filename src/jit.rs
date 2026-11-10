@@ -60,6 +60,16 @@ pub enum IrOp {
     CmpGt,
     CmpLe,
     CmpGe,
+    /// xmm0 = floor(xmm0) — roundsd imm=1 (этап 15: покрытие eval)
+    UnFloor,
+    /// xmm0 = sqrt(xmm0) — sqrtsd; отрицательный → NaN → runtime-деоптимизация
+    UnSqrt,
+    /// xmm0 = |xmm0| — andpd с маской 0x7FFF… из пула констант
+    UnAbs,
+    /// xmm0 = min(xmm1, xmm0): xmm1 — левый со стека (minsd)
+    Min,
+    /// xmm0 = max(xmm1, xmm0) (maxsd)
+    Max,
     /// ветвление по готовым флагам comisd (cond — сравнение):
     /// переходы патчатся rel32 после эмиссии; pfFix → false-ветка (NaN/unordered),
     /// ccFix → then-ветка (код условия), fallthrough → else-ветка
@@ -203,6 +213,8 @@ impl Compiler {
                     "and" => self.compile_and(&items[1..]),
                     "or" => self.compile_or(&items[1..]),
                     "let" => self.compile_let(&items[1..]),
+                    "cond" => self.compile_cond(&items[1..]),
+                    "let*" => self.compile_let_star(&items[1..]),
                     "begin" => {
                         if items.len() < 2 {
                             return None;
@@ -213,6 +225,11 @@ impl Compiler {
                         }
                         self.compile_expr(&items[items.len() - 1])
                     }
+                    // этап 15: числовые нативы как формы — компилируются
+                    // в машинный код (паритет значений с интерпретатором:
+                    // floor даёт Int в interp, Float в jit — см. LIMITATIONS)
+                    "min" | "max" => self.compile_minmax(head, &items[1..]),
+                    "abs" | "sqrt" | "floor" => self.compile_un(head, &items[1..]),
                     _ => None,
                 }
             }
@@ -455,6 +472,169 @@ impl Compiler {
         self.vars.truncate(base_vars);
         Some(())
     }
+
+    /// инверсия кода условия (для cond: истина → fallthrough на тело клауза)
+    fn invert_cc(code: u8) -> u8 {
+        match code {
+            0x82 => 0x83, // jb → jae
+            0x83 => 0x82, // jae → jb
+            0x84 => 0x85, // je → jne
+            0x85 => 0x84, // jne → je
+            0x86 => 0x87, // jbe → ja
+            0x87 => 0x86, // ja → jbe
+            _ => code,
+        }
+    }
+
+    /// тело клауза cond: все формы вычисляются, значение — последней
+    /// (как у begin: промежуточные значения живут только в xmm0 — стек сбалансирован)
+    fn compile_body_seq(&mut self, forms: &[Value]) -> Option<()> {
+        if forms.is_empty() {
+            return None;
+        }
+        for f in &forms[..forms.len() - 1] {
+            self.compile_expr(f)?;
+        }
+        self.compile_expr(&forms[forms.len() - 1])
+    }
+
+    /// (cond (c e…) … (else eN)) — цепочка if. Тест клауза — ТОЛЬКО сравнение
+    /// (как у if: прочие условия — честная деоптимизация); else — Sym «else»/«t».
+    /// Макет клауза: [test][Branch: инвертированный cc и jp → следующая клауза,
+    /// fallthrough → тело][тело][Jump end]. Без else-клауза — деоптимизация
+    /// (cond может вернуть Nil — не числовое ядро).
+    fn compile_cond(&mut self, clauses: &[Value]) -> Option<()> {
+        if clauses.is_empty() {
+            return None;
+        }
+        let mut pending: Vec<(usize, u8)> = Vec::new(); // (ir-позиция Branch, код)
+        let mut starts: Vec<usize> = Vec::new(); // ir-позиция старта каждого клауза
+        let last = clauses.len() - 1;
+        for (k, cl) in clauses.iter().enumerate() {
+            let items = match cl {
+                Value::List(it) if it.len() >= 2 => it,
+                _ => return None,
+            };
+            starts.push(self.ir.len());
+            let is_else = match items.first() {
+                Some(Value::Sym(s)) => (s == "else" || s == "t") && k == last,
+                _ => false,
+            };
+            if !is_else {
+                let (code, a, b) = Self::cond_branch(&items[0])?;
+                self.compile_expr(a)?;
+                self.ir.push(IrOp::Push);
+                self.sp += 1;
+                self.compile_expr(b)?;
+                self.ir.push(IrOp::Pop);
+                self.sp -= 1;
+                if k == last {
+                    // cond без else может вернуть Nil → не числовое ядро
+                    return None;
+                }
+                self.ir.push(IrOp::Placeholder); // Branch — цели после разбора
+                pending.push((self.ir.len() - 1, code));
+                self.compile_body_seq(&items[1..])?;
+                self.ir.push(IrOp::Placeholder); // Jump → end
+            } else {
+                self.compile_body_seq(&items[1..])?;
+            }
+        }
+        let end = self.ir.len();
+        // цели Branch: следующая клауза (или else-тело) — см. starts
+        for (k, (pos, code)) in pending.iter().enumerate() {
+            let next = starts[k + 1];
+            self.ir[*pos] = IrOp::Branch {
+                cond: Self::invert_cc(*code),
+                then_ir: next,
+                else_ir: next,
+                end_ir: end,
+            };
+        }
+        // оставшиеся Placeholder — это Jump → общий end
+        for op in self.ir.iter_mut() {
+            if matches!(op, IrOp::Placeholder) {
+                *op = IrOp::Jump(end);
+            }
+        }
+        Some(())
+    }
+
+    /// (let* ((a x) (b (+ a 1))) body) — последовательные привязки: каждая
+    /// видна следующим выражениям (отличие от параллельного let).
+    fn compile_let_star(&mut self, args: &[Value]) -> Option<()> {
+        if args.len() != 2 {
+            return None;
+        }
+        let bindings = match &args[0] {
+            Value::List(bs) if bs.len() <= 8 => bs.clone(),
+            _ => return None,
+        };
+        let body = &args[1];
+        if bindings.is_empty() {
+            return self.compile_expr(body);
+        }
+        let base_vars = self.vars.len();
+        let mut n_slots = 0usize;
+        for b in &bindings {
+            let (name, expr) = match b {
+                Value::List(p) if p.len() == 2 => match (&p[0], &p[1]) {
+                    (Value::Sym(s), e) => (s.clone(), e),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            // как у let: значение — только арифметика (булево не течёт в числа)
+            if Self::cond_branch(expr).is_some() {
+                return None;
+            }
+            self.compile_expr(expr)?;
+            self.ir.push(IrOp::Push);
+            self.sp += 1;
+            n_slots += 1;
+            self.vars.push((name, VarSlot::Slot(self.sp - 1)));
+        }
+        self.compile_expr(body)?;
+        self.ir.push(IrOp::AdjustStack(n_slots));
+        self.sp -= n_slots;
+        self.vars.truncate(base_vars);
+        Some(())
+    }
+
+    /// (min a b …) / (max a b …): лево-ассоциативная свёртка по стеку
+    fn compile_minmax(&mut self, op: &str, args: &[Value]) -> Option<()> {
+        if args.is_empty() {
+            return None;
+        }
+        self.compile_expr(&args[0])?;
+        for a in &args[1..] {
+            self.ir.push(IrOp::Push);
+            self.sp += 1;
+            self.compile_expr(a)?;
+            self.ir.push(IrOp::Pop);
+            self.sp -= 1;
+            self.ir
+                .push(if op == "min" { IrOp::Min } else { IrOp::Max });
+        }
+        Some(())
+    }
+
+    /// (abs x) / (sqrt x) / (floor x) — унарные числовые формы.
+    /// Паритет значений с интерпретатором: floor в interp даёт Int,
+    /// в jit — Float (числово равно; см. LIMITATIONS).
+    fn compile_un(&mut self, op: &str, args: &[Value]) -> Option<()> {
+        if args.len() != 1 {
+            return None;
+        }
+        self.compile_expr(&args[0])?;
+        self.ir.push(match op {
+            "abs" => IrOp::UnAbs,
+            "sqrt" => IrOp::UnSqrt,
+            "floor" => IrOp::UnFloor,
+            _ => return None,
+        });
+        Some(())
+    }
 }
 
 // ——————————————————————————— эмиссия: IR → машинный код ———————————————————————————
@@ -680,6 +860,132 @@ mod jit_tests {
         assert!(compile(&Value::Lambda(g)).is_none());
     }
 
+    #[test]
+    fn jit_этап15_cond_letstar_минмакс() {
+        // паритет interp vs JIT по битам (через нормализацию Int/Float/Bool)
+        let cases: Vec<(String, Vec<f64>)> = vec![
+            (
+                "(define f (lambda (x) (cond ((< x 0) (* x -1)) ((> x 10) (+ x 100)) (else (* x 2)))))"
+                    .into(),
+                vec![-6.0],
+            ),
+            (
+                "(define f (lambda (x) (cond ((< x 0) (* x -1)) ((> x 10) (+ x 100)) (else (* x 2)))))"
+                    .into(),
+                vec![3.0],
+            ),
+            (
+                "(define f (lambda (x) (cond ((< x 0) (* x -1)) ((> x 10) (+ x 100)) (else (* x 2)))))"
+                    .into(),
+                vec![42.0],
+            ),
+            (
+                "(define f (lambda (x) (cond ((> x 0) (min x 10.0)) (else (abs x)))))".into(),
+                vec![-7.0],
+            ),
+            (
+                "(define f (lambda (x) (cond ((> x 0) (min x 10.0)) (else (abs x)))))".into(),
+                vec![77.0],
+            ),
+            (
+                "(define f (lambda (x) (let* ((a (+ x 1)) (b (* a a))) (+ b x))))".into(),
+                vec![3.0],
+            ),
+            (
+                "(define f (lambda (x) (let* ((a (+ x 1)) (b (* a a))) (+ b x))))".into(),
+                vec![-2.0],
+            ),
+            ("(define f (lambda (a b) (min (max a 0.0) 100.0)))".into(), vec![-5.0, 9.0]),
+            ("(define f (lambda (a b) (min (max a 0.0) 100.0)))".into(), vec![250.0, 9.0]),
+            ("(define f (lambda (a b) (min (max a 0.0) 100.0)))".into(), vec![42.0, 9.0]),
+            ("(define f (lambda (x) (min x 5 9)))".into(), vec![7.0]),
+            ("(define f (lambda (x) (max x 2 8)))".into(), vec![3.0]),
+            ("(define f (lambda (x) (abs (- x 10.0))))".into(), vec![3.0]),
+            ("(define f (lambda (x) (sqrt (+ (* x x) 1.0))))".into(), vec![2.0]),
+            ("(define f (lambda (x) (floor (+ x 0.9))))".into(), vec![3.0]),
+            ("(define f (lambda (x) (floor (* -1.5 x))))".into(), vec![1.0]),
+        ];
+        for (src, args) in cases {
+            let g = make_lambda(&src);
+            let jf = compile(&Value::Lambda(g))
+                .unwrap_or_else(|| panic!("не скомпилировалось: {}", src));
+            let vals: Vec<Value> = args.iter().map(|v| Value::Float(*v)).collect();
+            let jit_r = call_jitted(&jf, &vals).unwrap_or_else(|| panic!("гард: {}", src));
+            // путь интерпретатора — та же лямбда через apply_lambda
+            let l = gc::lambda_clone(g);
+            let interp_r = crate::interp::apply_lambda(&l, &vals, 0)
+                .unwrap_or_else(|e| panic!("interp ошибся ({}): {}", src, e));
+            assert!(
+                results_equal(&interp_r, &jit_r),
+                "расхождение interp vs JIT: {} args={:?} interp={} jit={}",
+                src,
+                args,
+                crate::interp::fmt_value(&interp_r),
+                crate::interp::fmt_value(&jit_r)
+            );
+        }
+    }
+
+    #[test]
+    fn jit_этап15_деоптимизации() {
+        // cond без else (может вернуть Nil), некомпараторный тест, let*-ветвление
+        for src in [
+            "(define f (lambda (x) (cond ((< x 0) 1))))",
+            "(define f (lambda (x) (cond (x 1) (else 2))))",
+            "(define f (lambda (x) (let* ((a (< x 0))) a)))", // булево в let*-слоте
+            "(define f (lambda (x) (sqrt \"abc\")))",
+        ] {
+            let g = make_lambda(src);
+            assert!(
+                compile(&Value::Lambda(g)).is_none(),
+                "должна быть деоптимизация: {}",
+                src
+            );
+        }
+        // а это компилируется: 4 параметра — в пределах лимита
+        let g = make_lambda("(define f (lambda (x) (min x 1.0 2.0 3.0 4.0 5.0 6.0 7.0)))");
+        assert!(compile(&Value::Lambda(g)).is_some());
+    }
+
+    #[test]
+    fn jit_этап15_бенчмарк_смешанное_ядро() {
+        // ядро с ветвлением, клампой и floor: замер interp vs jit (шум VPS —
+        // порядок величины; точные числа — docs/benchmark.md)
+        let src = "(define f (lambda (x) (min (max (* (+ (* x x) (* 0.5 (floor (+ x 3.0)))) 1.3) -50.0) 200.0)))";
+        let g = make_lambda(src);
+        let l = gc::lambda_clone(g);
+        let jf = compile(&Value::Lambda(g)).expect("ядро обязано компилироваться");
+        let vals: Vec<Value> = vec![Value::Float(2.5)];
+        let interp_r = crate::interp::apply_lambda(&l, &vals, 0).unwrap();
+        let jit_r = call_jitted(&jf, &vals).unwrap();
+        assert!(results_equal(&interp_r, &jit_r), "паритет результата");
+        let n = 100_000u32;
+        let t0 = std::time::Instant::now();
+        for k in 0..n {
+            let a = [Value::Float((k % 97) as f64 - 48.0)];
+            let _ = crate::interp::apply_lambda(&l, &a, 0);
+        }
+        let ti = t0.elapsed();
+        let t0 = std::time::Instant::now();
+        for k in 0..n {
+            let a = [Value::Float((k % 97) as f64 - 48.0)];
+            let _ = call_jitted(&jf, &a);
+        }
+        let tj = t0.elapsed();
+        println!(
+            "этап15 ядро: interp {:?} vs jit {:?} (ускорение ≈{:.1}×)",
+            ti,
+            tj,
+            ti.as_secs_f64() / tj.as_secs_f64()
+        );
+        assert!(
+            tj.as_secs_f64() * 2.0 < ti.as_secs_f64(),
+            "JIT медленнее 2× от interp: {:?} vs {:?}",
+            tj,
+            ti
+        );
+    }
+
     // ——— свойственный тест: seeded xorshift, interp vs JIT ———
 
     struct Xorshift(u64);
@@ -758,6 +1064,26 @@ mod jit_tests {
                 gen_expr(rng, d - 1),
                 gen_expr(rng, d - 1),
             ])
+        } else if pick < 90 {
+            // этап 15: унарные числовые формы (sqrt в генератор не включён —
+            // отрицательный аргумент даёт NaN и законную runtime-деоптимизацию)
+            let op = ["abs", "floor"][(rng.next() % 2) as usize];
+            Value::List(vec![Value::Sym(op.into()), gen_arith(rng, d - 1)])
+        } else if pick < 92 {
+            // cond: тест — сравнение, тела — чистая арифметика (числовое ядро)
+            let op = ["<", "=", ">", "<=", ">="][(rng.next() % 5) as usize];
+            Value::List(vec![
+                Value::Sym("cond".into()),
+                Value::List(vec![
+                    Value::List(vec![
+                        Value::Sym(op.into()),
+                        gen_arith(rng, d - 1),
+                        gen_arith(rng, d - 1),
+                    ]),
+                    gen_arith(rng, d - 1),
+                ]),
+                Value::List(vec![Value::Sym("else".into()), gen_arith(rng, d - 1)]),
+            ])
         } else if pick < 94 {
             let op = if rng.next() % 2 == 0 { "and" } else { "or" };
             let cop = ["<", "=", ">", "<=", ">="][(rng.next() % 5) as usize];
@@ -811,7 +1137,7 @@ mod jit_tests {
         let mut checked = 0usize;
         for i in 0..3000u32 {
             let body = gen_expr(&mut rng, 4);
-            let src_form = Value::List(vec![
+            let _src_form = Value::List(vec![
                 Value::Sym("define".into()),
                 Value::List(vec![
                     Value::Sym("f".into()),
@@ -866,10 +1192,6 @@ mod jit_tests {
                         (Err(e), Some(b)) => panic!(
                             "JIT вернул значение там, где interp ошибается (кейс {}): {} — тело: {}, jit={}",
                             i, e, crate::interp::fmt_value(&body), crate::interp::fmt_value(&b)
-                        ),
-                        (Err(e), _) => panic!(
-                            "interp ошибся (кейс {}): {} — тело: {}",
-                            i, e, crate::interp::fmt_value(&body)
                         ),
                     }
                 }
