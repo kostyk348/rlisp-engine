@@ -23,6 +23,7 @@ mod parse_diff;
 mod particles;
 mod physics;
 mod png;
+mod post;
 mod render3d;
 mod simd;
 mod skel;

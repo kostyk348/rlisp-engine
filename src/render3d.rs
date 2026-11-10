@@ -1789,6 +1789,22 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         Ok(Value::Int(n as i64))
     });
 
+    // пост-обработка (этап 19): (gpu3d-post exposure bloom vignette grain)
+    let hc = hal.clone();
+    def(env, "gpu3d-post", move |args| {
+        need(args, 4)?;
+        let p = crate::post::PostParams {
+            exposure: num_val(&args[0])? as f32,
+            bloom: num_val(&args[1])? as f32,
+            vignette: num_val(&args[2])? as f32,
+            grain: num_val(&args[3])? as f32,
+        };
+        let mut h = hc.borrow_mut();
+        let _ = h.flush_gpu(); // отложенный 2D-слой — до поста (HUD рисуется позже)
+        crate::post::apply(&mut h, &p);
+        Ok(Value::Nil)
+    });
+
     let hc = hal.clone();
     def(env, "gpu3d-stats", move |_: &[Value]| {
         let h = hc.borrow();
