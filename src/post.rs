@@ -35,8 +35,11 @@ impl Default for PostParams {
 /// порог начала плеча: ниже — тождественность (сцена display-referred,
 /// средние тона трогать нельзя), выше — мягкая компрессия к 1.0
 const SHOULDER_K: f32 = 0.85;
-/// порог luma для bloom
-const BLOOM_THR: f32 = 0.70;
+/// порог luma для bloom: собирается только ИЗБЫТОК над порогом
+/// (бледное небо ~0.85 почти не цветёт, солнце/блики — цветут)
+const BLOOM_THR: f32 = 0.86;
+/// усиление избытка при возврате
+const BLOOM_GAIN: f32 = 3.0;
 
 /// мягкое плечо: y(x)=x при x≤K; выше — 1−exp-компрессия к единице
 #[inline]
@@ -93,10 +96,14 @@ pub fn apply(hal: &mut Hal, p: &PostParams) {
                         let r = fb[pi] as f32 / 255.0;
                         let g = fb[pi + 1] as f32 / 255.0;
                         let b = fb[pi + 2] as f32 / 255.0;
-                        if luma(r, g, b) > BLOOM_THR {
-                            acc[0] += r;
-                            acc[1] += g;
-                            acc[2] += b;
+                        let l = luma(r, g, b);
+                        if l > BLOOM_THR {
+                            // избыток над порогом: небо (l≈0.87) даёт ~3%,
+                            // солнце (l≈0.97) — 11% ×GAIN — заметный ореол
+                            let f = ((l - BLOOM_THR) / l) * BLOOM_GAIN;
+                            acc[0] += r * f;
+                            acc[1] += g * f;
+                            acc[2] += b * f;
                             cnt += 1.0;
                         }
                     }
