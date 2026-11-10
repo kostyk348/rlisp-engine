@@ -425,20 +425,29 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
 
 ## Demo: Island (stage 8, branch stage8/island)
 
-assets/lisp/island.lisp — animated water (3 sine waves, specular material),
-a heightfield island with sand/grass/rock bands (one vertex buffer, three
-index sets, dithered boundaries), a beach as a radial ring with a dithered
-inner edge, 18 trees (batched trunks + 3-layer crossed-quad canopies with
-alpha-test), rocks, warm light and sky-colored fog, plus glTF models
-WaterBottle and Lantern (CC0-1.0, KhronosGroup/glTF-Sample-Assets) — model
-scale is normalized by bounding box (outlier service meshes such as the
-Lantern's 25-unit "light" are discarded). The model pipeline is
-load-gltf.lisp (a subset of glTF 2.0 ASCII on top of zero-dependency
-natives json-parse / base64-decode / file-read-bytes / texture-load-png).
-Headless measurement: 40.9 fps at 320x240 (--fast). Artifacts:
-demo/island.gif, demo/island_filmstrip.png. Asset provenance and licenses:
-docs/credits.md; subset limitations: LIMITATIONS.md.
+## Demo: Island (stage 9, graphics revision 3)
 
-Also fixed in revision 2: the scene never called `gpu3d-clear`, so the
-previous frame's z-buffer "ate" the next one (geometry vanished behind
-stale depth).
+Scene: assets/lisp/island.lisp. New since revision 2:
+- **Alpha blending** (engine stage 9): a transparent queue sorted far→near
+  per triangle, src-alpha blending, z-test without z-write, two-sided
+  faces — natives `gpu3d-alpha-blend`, `gpu3d-flush-alpha`;
+- **`gpu3d-mesh-vc`** — per-vertex RGBA: water with a depth gradient
+  (turquoise→deep), FRESNEL (sky reflection at grazing angles) and
+  shoreline FOAM;
+- **PNG textures** (scripts/gen_textures.py; procedural, tileable,
+  premultiplied sprites): grass/sand/rock/bark 256², leaves, palm fronds,
+  clouds, glow, grass tufts;
+- **Palm trees** (7): curved trunk of 5 segments + 7 drooping swaying
+  fronds;
+- rocks on STEEP slopes (height-gradient threshold), soft blob shadows
+  under trees, grass tuft billboards, clouds, sun halo, sky with a warm
+  horizon, matched fog (the water-plane edge dissolves);
+- glTF models WaterBottle and Lantern (CC0-1.0,
+  KhronosGroup/glTF-Sample-Assets).
+
+Headless measurement: 27–28 fps at 320x240 (--fast; revision 2 ran at
+40.9 on a much simpler scene — blending costs ~6 fps, per-vertex water
+color ~12 fps, compensated by instance caches and 1/8-frame water color
+updates). Artifacts: demo/island.gif, demo/island_filmstrip.png. Asset
+provenance: docs/credits.md; limitations: LIMITATIONS.md.
+

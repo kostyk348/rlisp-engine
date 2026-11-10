@@ -60,6 +60,28 @@ pub struct R3 {
     pub tiling: [f32; 2],
     /// Туман: [r g b density]; density 0 = выкл (дефолт).
     pub fog: [f32; 4],
+    /// Равномерная альфа материала (gpu3d-alpha-blend): 1 = непрозрачно
+    /// (дефолт); < 1 — треугольники с итоговой альфой < 1 уходят в
+    /// прозрачную очередь (src-alpha блендинг, сорт far→near, без z-записи).
+    pub blend: f32,
+    /// Прозрачная очередь: собирается непрозрачными вызовами, дренируется
+    /// gpu3d-flush-alpha (сортировка far→near — художник-порядок для крон,
+    /// воды, облаков).
+    pub(crate) transq: Vec<TransTri>,
+}
+
+/// Треугольник прозрачной очереди: экранные вершины со ВСЕМИ атрибутами
+/// (u/w v/w 1/w мир/w a/w r/w g/w b/w — уже спроецированы), мировая нормаль,
+/// цвет-множитель и снимок состояния материалов на момент постановки.
+pub(crate) struct TransTri {
+    /// Видовая глубина центра (w_clip, больше = дальше) — ключ сортировки.
+    pub depth: f32,
+    pub pts: [Vtx; 3],
+    pub nrm: [f32; 3],
+    pub tex: i64,
+    pub spec: f32,
+    pub shininess: f32,
+    pub fog: [f32; 4],
 }
 
 impl Default for R3 {
@@ -85,6 +107,8 @@ impl R3 {
             view: [0.0, 0.0, 0.0],
             tiling: [1.0, 1.0],
             fog: [0.7, 0.8, 0.9, 0.0],
+            blend: 1.0,
+            transq: Vec::new(),
         }
     }
 
@@ -183,12 +207,13 @@ fn dot3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Вершина клип-пространства: [x y z w] + атрибуты u/w, v/w, 1/w, wx/w, wy/w, wz/w.
+/// Вершина клип-пространства: [x y z w] + атрибуты u/w, v/w, 1/w, wx/w, wy/w,
+/// wz/w, a/w, r/w, g/w, b/w (этап 9: per-vertex RGBA для mesh-vc).
 /// Клиппинг Sutherland–Hodgman по плоскости z + w >= 0 (near).
-/// Атрибуты (u/w, 1/w, мир/w) линейны вдоль ребра → интерполируются тем же t.
-/// Мир/w нужен этапу 7: per-pixel half-vector блика (перспектива-корректная
-/// мировая позиция пикселя).
-fn clip_near6(poly: &[[f32; 10]]) -> Vec<[f32; 10]> {
+/// Атрибуты (u/w, 1/w, мир/w, a/w, rgb/w) линейны вдоль ребра → интерполируются
+/// тем же t. Мир/w нужен per-pixel half-vector блику, a/w и rgb/w — прозрачности
+/// и цветовым градиентам (вода, небо).
+fn clip_near6(poly: &[[f32; 14]]) -> Vec<[f32; 14]> {
     let mut out = Vec::with_capacity(poly.len() + 1);
     let n = poly.len();
     for i in 0..n {
@@ -203,7 +228,7 @@ fn clip_near6(poly: &[[f32; 10]]) -> Vec<[f32; 10]> {
         }
         if a_in != b_in {
             let t = da / (da - db);
-            let mut v = [0.0f32; 10];
+            let mut v = [0.0f32; 14];
             for k in 0..10 {
                 v[k] = a[k] + (b[k] - a[k]) * t;
             }
@@ -213,7 +238,8 @@ fn clip_near6(poly: &[[f32; 10]]) -> Vec<[f32; 10]> {
     out
 }
 
-struct Vtx {
+#[derive(Clone, Copy)]
+pub(crate) struct Vtx {
     sx: f32,
     sy: f32,
     sz: f32,
@@ -223,9 +249,13 @@ struct Vtx {
     wxq: f32, // мир.x/w (этап 7: блик)
     wyq: f32, // мир.y/w
     wzq: f32, // мир.z/w
+    aq: f32,  // альфа/w (этап 9: блендинг; 1/w → альфа 1)
+    rq: f32,  // r/w (этап 9: per-vertex цвет)
+    gq: f32,  // g/w
+    bq: f32,  // b/w
 }
 
-fn project6(c: &[f32; 10], w: usize, h: usize) -> Option<Vtx> {
+fn project6(c: &[f32; 14], w: usize, h: usize) -> Option<Vtx> {
     if c[3] <= 1e-6 {
         return None;
     }
@@ -242,6 +272,10 @@ fn project6(c: &[f32; 10], w: usize, h: usize) -> Option<Vtx> {
         wxq: c[7], // мир/w
         wyq: c[8],
         wzq: c[9],
+        aq: c[10],
+        rq: c[11],
+        gq: c[12],
+        bq: c[13],
     })
 }
 
@@ -263,6 +297,10 @@ fn project(c: &[f32; 4], w: usize, h: usize) -> Option<Vtx> {
         wxq: 0.0,
         wyq: 0.0,
         wzq: 0.0,
+        aq: inv,
+        rq: 0.0,
+        gq: 0.0,
+        bq: 0.0,
     })
 }
 
@@ -275,6 +313,7 @@ struct TexRef {
     w: usize,
     h: usize,
     px: Vec<u8>,
+    id: i64,
 }
 
 fn tex_lookup(hal: &Hal, id: i64) -> Result<Option<TexRef>, String> {
@@ -292,6 +331,7 @@ fn tex_lookup(hal: &Hal, id: i64) -> Result<Option<TexRef>, String> {
         w: t.w,
         h: t.h,
         px: t.px.clone(),
+        id,
     }))
 }
 
@@ -389,6 +429,7 @@ fn mesh_draw(
     hal: &mut Hal,
     pos: &[f32],
     uv: Option<&[f32]>,
+    vca: Option<&[f32]>, // per-vertex rgba (gpu3d-mesh-vc)
     idx: &[f32],
     model: &[f32],
     mvp: &[f32],
@@ -410,6 +451,15 @@ fn mesh_draw(
             return Err(format!(
                 "gpu3d: uv — пары на вершину ({}), вершин {}",
                 u.len(),
+                n
+            ));
+        }
+    }
+    if let Some(vc) = vca {
+        if vc.len() != n * 4 {
+            return Err(format!(
+                "gpu3d: rgba — четвёрки на вершину ({}), вершин {}",
+                vc.len(),
                 n
             ));
         }
@@ -511,6 +561,7 @@ fn mesh_draw(
             &clip,
             &world,
             uv,
+            vca,
             idx,
             None,
             (r as f32, g as f32, b as f32),
@@ -518,6 +569,7 @@ fn mesh_draw(
             diffuse,
             &light,
             tex.as_ref(),
+            false,
             &mut drawn,
             &mut culled,
         )?;
@@ -627,6 +679,7 @@ pub(crate) fn batch_draw(
         &clip,
         &world,
         if uv.is_some() { Some(&uvq) } else { None },
+        None,
         &idx_all,
         Some(&tint),
         (0.0, 0.0, 0.0),
@@ -634,12 +687,203 @@ pub(crate) fn batch_draw(
         diffuse,
         &light,
         tex.as_ref(),
+        false,
         &mut drawn,
         &mut culled,
     )?;
     r3.drawn += drawn;
     r3.culled += culled;
     Ok(drawn)
+}
+
+/// Прозрачный проход (этап 9): сортируем очередь far→near по видовой глубине
+/// центра и рисуем с src-alpha блендингом (z-тест есть, z-записи нет,
+/// двусторонне). Порядок в очереди задаёт художник-видимость для крон, воды
+/// и облаков — как у настоящего GPU с painter's sort по треугольникам.
+pub(crate) fn flush_transparent(hal: &mut Hal) -> Result<u64, String> {
+    if hal.r3.transq.is_empty() {
+        return Ok(0);
+    }
+    let _ = hal.flush_gpu();
+    let (w, h) = (hal.w, hal.h);
+    if hal.r3.zbuf.len() != w * h {
+        hal.r3.reset(w, h);
+    }
+    let mut q = std::mem::take(&mut hal.r3.transq);
+    q.sort_by(|a, b| {
+        b.depth
+            .partial_cmp(&a.depth)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // текстуры резолвим один раз на id (клон px дорог) — до разбора hal
+    let mut texcache: Vec<(i64, TexRef)> = Vec::new();
+    {
+        let mut ids: Vec<i64> = q.iter().map(|t| t.tex).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if id != 0 {
+                texcache.push((
+                    id,
+                    tex_lookup(hal, id)?
+                        .ok_or_else(|| format!("gpu3d-flush-alpha: нет текстуры {}", id))?,
+                ));
+            }
+        }
+    }
+    let mut drawn: u64 = 0;
+    let Hal { fb, r3, .. } = &mut *hal;
+    for t in &q {
+        let tex = texcache
+            .iter()
+            .find(|(id, _)| *id == t.tex)
+            .map(|(_, tr)| tr);
+        blend_tri(fb, r3, w, h, t, tex, &mut drawn)?;
+    }
+    r3.drawn += drawn;
+    Ok(drawn)
+}
+
+/// Один треугольник прозрачного прохода: блендинг, z-тест без z-записи.
+#[allow(clippy::too_many_arguments)]
+fn blend_tri(
+    fb: &mut [u8],
+    r3: &mut R3,
+    w: usize,
+    h: usize,
+    t: &TransTri,
+    tex: Option<&TexRef>,
+    drawn: &mut u64,
+) -> Result<(), String> {
+    let light = {
+        let l = r3.light;
+        let len = dot3(&l, &l).sqrt().max(1e-6);
+        [l[0] / len, l[1] / len, l[2] / len]
+    };
+    let (ambient, diffuse) = (r3.ambient, r3.diffuse);
+    let spec_on = t.spec > 0.0;
+    let fog_on = t.fog[3] > 0.0;
+    let (fog_density, fog_r, fog_g, fog_b) = (t.fog[3], t.fog[0], t.fog[1], t.fog[2]);
+    let (tu, tv) = (r3.tiling[0], r3.tiling[1]);
+    let nnrm = t.nrm;
+    let nl_ok = dot3(&nnrm, &nnrm) > 0.5;
+    let shade = if !nl_ok {
+        ambient
+    } else {
+        let ndl = dot3(&nnrm, &light).abs(); // двустороннее освещение
+        (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0)
+    };
+    let (p0, p1, p2) = (&t.pts[0], &t.pts[1], &t.pts[2]);
+    let (tw, th) = tex.map(|x| (x.w, x.h)).unwrap_or((0, 0));
+
+    let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
+    let maxx = (p0.sx.max(p1.sx).max(p2.sx).ceil() as i64).min(w as i64 - 1);
+    let miny = (p0.sy.min(p1.sy).min(p2.sy).floor() as i64).max(0);
+    let maxy = (p0.sy.max(p1.sy).max(p2.sy).ceil() as i64).min(h as i64 - 1);
+    if minx > maxx || miny > maxy {
+        return Ok(());
+    }
+    for py in miny..=maxy {
+        let row = py as usize * w;
+        let fy = py as f32 + 0.5;
+        for px in minx..=maxx {
+            let fx = px as f32 + 0.5;
+            let w0 = edge(p1.sx, p1.sy, p2.sx, p2.sy, fx, fy);
+            let w1 = edge(p2.sx, p2.sy, p0.sx, p0.sy, fx, fy);
+            let w2 = edge(p0.sx, p0.sy, p1.sx, p1.sy, fx, fy);
+            // двусторонне: внутри полигона веса одного знака
+            if (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) || (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) {
+                let sum = w0 + w1 + w2;
+                if sum.abs() < 1e-9 {
+                    continue;
+                }
+                let z = (w0 * p0.sz + w1 * p1.sz + w2 * p2.sz) / sum;
+                let pi = row + px as usize;
+                if z < r3.zbuf[pi] {
+                    let iwp = (w0 * p0.iw + w1 * p1.iw + w2 * p2.iw) / sum;
+                    if iwp.abs() <= 1e-12 {
+                        continue;
+                    }
+                    let s = if spec_on {
+                        let wx = ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp;
+                        let wy = ((w0 * p0.wyq + w1 * p1.wyq + w2 * p2.wyq) / sum) / iwp;
+                        let wz = ((w0 * p0.wzq + w1 * p1.wzq + w2 * p2.wzq) / sum) / iwp;
+                        let v = [r3.view[0] - wx, r3.view[1] - wy, r3.view[2] - wz];
+                        let vl = dot3(&v, &v).sqrt().max(1e-9);
+                        let hv = [
+                            light[0] + v[0] / vl,
+                            light[1] + v[1] / vl,
+                            light[2] + v[2] / vl,
+                        ];
+                        let hl = dot3(&hv, &hv).sqrt().max(1e-9);
+                        spec_highlight(
+                            dot3(&nnrm, &[hv[0] / hl, hv[1] / hl, hv[2] / hl]),
+                            t.shininess,
+                            t.spec,
+                        )
+                    } else {
+                        0.0
+                    };
+                    let fogf = if fog_on {
+                        fog_factor(fog_density, 1.0 / iwp)
+                    } else {
+                        0.0
+                    };
+                    // per-vertex rgb/alpha (градиент воды/листвы) — всегда
+                    // интерполяция: у mesh-vc цвет живёт в вершинах, тинт
+                    // для прозрачного прохода не используется
+                    let f = 1.0 / iwp;
+                    let rq = ((w0 * p0.rq + w1 * p1.rq + w2 * p2.rq) / sum) * f;
+                    let gq = ((w0 * p0.gq + w1 * p1.gq + w2 * p2.gq) / sum) * f;
+                    let bq = ((w0 * p0.bq + w1 * p1.bq + w2 * p2.bq) / sum) * f;
+                    let (mut c0, mut c1, mut c2) = (rq * shade, gq * shade, bq * shade);
+                    let mut al =
+                        (((w0 * p0.aq + w1 * p1.aq + w2 * p2.aq) / sum) * f).clamp(0.0, 1.0);
+                    if let Some(tx) = tex {
+                        let uq = (w0 * p0.uq + w1 * p1.uq + w2 * p2.uq) / sum;
+                        let vq = (w0 * p0.vq + w1 * p1.vq + w2 * p2.vq) / sum;
+                        let uf = tiled_coord(uq / iwp, tu);
+                        let vf = tiled_coord(vq / iwp, tv);
+                        let uu = (uf.clamp(0.0, 0.99999) * tw as f32) as usize;
+                        let vv = (vf.clamp(0.0, 0.99999) * th as f32) as usize;
+                        let ti = (vv * tw + uu) * 4;
+                        let texel = &tx.px[ti..ti + 4];
+                        al *= texel[3] as f32 / 255.0;
+                        if al <= 0.004 {
+                            continue;
+                        }
+                        c0 *= texel[0] as f32 / 255.0;
+                        c1 *= texel[1] as f32 / 255.0;
+                        c2 *= texel[2] as f32 / 255.0;
+                    } else if al <= 0.004 {
+                        continue;
+                    }
+                    if spec_on {
+                        c0 = (c0 + s).min(1.0);
+                        c1 = (c1 + s).min(1.0);
+                        c2 = (c2 + s).min(1.0);
+                    }
+                    if fog_on {
+                        let g = 1.0 - fogf;
+                        c0 = c0 * g + fog_r * fogf;
+                        c1 = c1 * g + fog_g * fogf;
+                        c2 = c2 * g + fog_b * fogf;
+                    }
+                    let o = pi * 4;
+                    let dr = fb[o] as f32 / 255.0;
+                    let dg = fb[o + 1] as f32 / 255.0;
+                    let db = fb[o + 2] as f32 / 255.0;
+                    let iv = 1.0 - al;
+                    fb[o] = col((c0 * al + dr * iv) as f64);
+                    fb[o + 1] = col((c1 * al + dg * iv) as f64);
+                    fb[o + 2] = col((c2 * al + db * iv) as f64);
+                    fb[o + 3] = 255;
+                }
+            }
+        }
+    }
+    *drawn += 1;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -651,6 +895,7 @@ fn raster_tris(
     clip: &[f32],
     world: &[f32],
     uvq: Option<&[f32]>,
+    vca: Option<&[f32]>, // per-vertex rgba (gpu3d-mesh-vc): n*4 f32
     idx: &[f32],
     tint: Option<&[f32]>,   // rgb на вершину (батч: цвет инстанса)
     solid: (f32, f32, f32), // один цвет (обычный mesh)
@@ -658,11 +903,11 @@ fn raster_tris(
     diffuse: f32,
     light: &[f32; 3],
     tex: Option<&TexRef>,
+    blend_pass: bool, // true = прозрачный проход (блендинг, без z-записи)
     drawn: &mut u64,
     culled: &mut u64,
 ) -> Result<(), String> {
     let n = world.len() / 3;
-    let textured = tex.is_some();
     for f in 0..idx.len() / 3 {
         let mut tri = [0usize; 3];
         for k in 0..3 {
@@ -674,18 +919,31 @@ fn raster_tris(
             }
             tri[k] = vi as usize;
         }
-        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w, мир/w
-        let mut poly: Vec<[f32; 10]> = Vec::with_capacity(3);
+        // полигон в клип-пространстве + атрибуты u/w, v/w, 1/w, мир/w, a/w, rgb/w
+        let blend_base = if r3.blend > 0.0 {
+            r3.blend.min(1.0)
+        } else {
+            1.0
+        };
+        let base_rgb = match tint {
+            Some(t) => [t[tri[0] * 3], t[tri[0] * 3 + 1], t[tri[0] * 3 + 2]],
+            None => [solid.0, solid.1, solid.2],
+        };
+        let mut poly: Vec<[f32; 14]> = Vec::with_capacity(3);
         for &t in &tri {
             let cw = clip[t * 4 + 3];
             let iw = if cw > 1e-6 { 1.0 / cw } else { 0.0 };
-            // перспективно-корректные атрибуты: в полигон идут u/w, v/w и
-            // мировая позиция /w (они, как и 1/w, аффинны на ребре — клиппинг
-            // и растр корректны); мир/w нужен per-pixel блику этапа 7
+            // перспективно-корректные атрибуты: в полигон идут u/w, v/w,
+            // мировая позиция /w, альфа/w и rgb/w (аффинны на ребре)
             let (uq, vq) = if let Some(u) = uvq {
                 (u[t * 2] * iw, u[t * 2 + 1] * iw)
             } else {
                 (0.0, 0.0)
+            };
+            let (a, rr, gg, bb) = if let Some(vc) = vca {
+                (vc[t * 4 + 3], vc[t * 4], vc[t * 4 + 1], vc[t * 4 + 2])
+            } else {
+                (blend_base, base_rgb[0], base_rgb[1], base_rgb[2])
             };
             poly.push([
                 clip[t * 4],
@@ -698,6 +956,10 @@ fn raster_tris(
                 world[t * 3] * iw,
                 world[t * 3 + 1] * iw,
                 world[t * 3 + 2] * iw,
+                a * iw,
+                rr * iw,
+                gg * iw,
+                bb * iw,
             ]);
         }
 
@@ -733,6 +995,7 @@ fn raster_tris(
         let (spec, shininess) = (r3.spec, r3.shininess);
         let fog_on = r3.fog[3] > 0.0;
         let (fog_density, fog_r, fog_g, fog_b) = (r3.fog[3], r3.fog[0], r3.fog[1], r3.fog[2]);
+        let fog_snap = r3.fog;
         let alpha_on = r3.alpha_test > 0.0;
         let alpha_thr = r3.alpha_test;
         let (tu, tv) = (r3.tiling[0], r3.tiling[1]);
@@ -740,12 +1003,10 @@ fn raster_tris(
         // вентилятор: (0, k, k+1)
         for kk in 1..pts.len() - 1 {
             let (p0, p1, p2) = (&pts[0], &pts[kk], &pts[kk + 1]);
-            // backface cull: фронт = CCW в NDC → после y-flip площадь < 0
+            // backface cull: фронт = CCW в NDC → после y-flip площадь < 0.
+            // Куллинг ПОЗЖЕ — прозрачные грани двусторонни, задние тоже
+            // должны попасть в прозрачную очередь (решение ниже).
             let area = edge(p0.sx, p0.sy, p1.sx, p1.sy, p2.sx, p2.sy);
-            if area >= -1e-6 {
-                *culled += 1;
-                continue;
-            }
             // нормаль грани в мире (flat shading)
             let (wa, wb, wc) = (
                 [
@@ -773,34 +1034,65 @@ fn raster_tris(
             } else {
                 [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl]
             };
+            // прозрачный проход двусторонний: нормаль разворачиваем к свету
             let shade = if nl < 1e-9 {
                 ambient
             } else {
-                let ndl = dot3(&nnrm, light);
+                let mut ndl = dot3(&nnrm, light);
+                if blend_pass && ndl < 0.0 {
+                    ndl = -ndl;
+                }
                 (ambient + diffuse * ndl.max(0.0)).clamp(0.0, 1.0)
             };
-            // цвет грани: тинт первой вершины (у батча — свой на инстанс)
-            let (tr, tg, tb) = match tint {
-                Some(t) => (t[tri[0] * 3], t[tri[0] * 3 + 1], t[tri[0] * 3 + 2]),
-                None => solid,
+
+            // — прозрачная очередь (этап 9): альфа треугольника = средняя
+            // перспектива-корректная альфа вершин; < 1 → ставим в очередь
+            // (сорт far→near и блендинг — в gpu3d-flush-alpha) —
+            let va = [
+                if p0.iw > 1e-12 { p0.aq / p0.iw } else { 1.0 },
+                if p1.iw > 1e-12 { p1.aq / p1.iw } else { 1.0 },
+                if p2.iw > 1e-12 { p2.aq / p2.iw } else { 1.0 },
+            ];
+            let al_avg = (va[0] + va[1] + va[2]) / 3.0;
+            if !blend_pass && al_avg < 0.999 {
+                let depth = 1.0 / 3.0
+                    * (if p0.iw > 1e-12 { 1.0 / p0.iw } else { 0.0 }
+                        + if p1.iw > 1e-12 { 1.0 / p1.iw } else { 0.0 }
+                        + if p2.iw > 1e-12 { 1.0 / p2.iw } else { 0.0 });
+                r3.transq.push(TransTri {
+                    depth,
+                    pts: [*p0, *p1, *p2],
+                    nrm: nnrm,
+                    tex: tex.map(|t| t.id).unwrap_or(0),
+                    spec,
+                    shininess,
+                    fog: fog_snap,
+                });
+                continue;
+            }
+            // непрозрачный проход: задняя грань — кулим (прозрачные прошли выше)
+            if !blend_pass && area >= -1e-6 {
+                *culled += 1;
+                continue;
+            }
+            // цвет грани: per-vertex RGB (вода/небо) или тинт первой вершины
+            let vc_rgb = !blend_pass
+                && p0.rq == p1.rq
+                && p0.rq == p2.rq
+                && p0.gq == p1.gq
+                && p0.gq == p2.gq
+                && p0.bq == p1.bq
+                && p0.bq == p2.bq;
+            let (tr, tg, tb) = if vc_rgb {
+                (p0.rq / p0.iw, p0.gq / p0.iw, p0.bq / p0.iw)
+            } else {
+                match tint {
+                    Some(t) => (t[tri[0] * 3], t[tri[0] * 3 + 1], t[tri[0] * 3 + 2]),
+                    None => solid,
+                }
             };
 
             let (tw, th) = tex.map(|t| (t.w, t.h)).unwrap_or((0, 0));
-            let cr = if textured {
-                0u8
-            } else {
-                col(tr as f64 * shade as f64)
-            };
-            let cg = if textured {
-                0u8
-            } else {
-                col(tg as f64 * shade as f64)
-            };
-            let cb = if textured {
-                0u8
-            } else {
-                col(tb as f64 * shade as f64)
-            };
 
             // bbox
             let minx = (p0.sx.min(p1.sx).min(p2.sx).floor() as i64).max(0);
@@ -828,14 +1120,20 @@ fn raster_tris(
                         };
                         let pi = row + px as usize;
                         if z < r3.zbuf[pi] {
-                            let o = pi * 4;
                             // перспектива-корректный 1/w пикселя; истинная
                             // глубина = 1/(1/w) = w_clip = -z_view (перспектива
                             // render3d.lisp), она же — глубина тумана
                             let iwp = (w0 * p0.iw + w1 * p1.iw + w2 * p2.iw) / sum;
+                            if iwp.abs() <= 1e-12 {
+                                // деградированный iw: z пишется (opaque), цвет нет
+                                if !blend_pass {
+                                    r3.zbuf[pi] = z;
+                                }
+                                continue;
+                            }
                             // блик Blinn-Phong (этап 7): half-vector на
                             // перспектива-корректной мировой позиции пикселя
-                            let s = if spec_on && iwp.abs() > 1e-12 {
+                            let s = if spec_on {
                                 let wx = ((w0 * p0.wxq + w1 * p1.wxq + w2 * p2.wxq) / sum) / iwp;
                                 let wy = ((w0 * p0.wyq + w1 * p1.wyq + w2 * p2.wyq) / sum) / iwp;
                                 let wz = ((w0 * p0.wzq + w1 * p1.wzq + w2 * p2.wzq) / sum) / iwp;
@@ -858,97 +1156,85 @@ fn raster_tris(
                             // туман (этап 7): фактор по истинной глубине,
                             // смешение ПОСЛЕ шейдинга и блика
                             let fogf = if fog_on {
-                                fog_factor(fog_density, if iwp > 1e-9 { 1.0 / iwp } else { 1e9 })
+                                fog_factor(fog_density, 1.0 / iwp)
                             } else {
                                 0.0
+                            };
+                            // базовый цвет пикселя: per-vertex градиент (этап 9)
+                            // или равномерный цвет грани × Lambert
+                            let (mut c0, mut c1, mut c2) = if !vc_rgb {
+                                let f = 1.0 / iwp;
+                                let rq = ((w0 * p0.rq + w1 * p1.rq + w2 * p2.rq) / sum) * f;
+                                let gq = ((w0 * p0.gq + w1 * p1.gq + w2 * p2.gq) / sum) * f;
+                                let bq = ((w0 * p0.bq + w1 * p1.bq + w2 * p2.bq) / sum) * f;
+                                (rq * shade, gq * shade, bq * shade)
+                            } else {
+                                (tr * shade, tg * shade, tb * shade)
+                            };
+                            let mut al = if blend_pass {
+                                let f = 1.0 / iwp;
+                                (((w0 * p0.aq + w1 * p1.aq + w2 * p2.aq) / sum) * f).clamp(0.0, 1.0)
+                            } else {
+                                1.0
                             };
                             if let Some(t) = tex {
                                 // перспектива-корректный UV: (u/w)/(1/w)
                                 let uq = (w0 * p0.uq + w1 * p1.uq + w2 * p2.uq) / sum;
                                 let vq = (w0 * p0.vq + w1 * p1.vq + w2 * p2.vq) / sum;
-                                if iwp.abs() > 1e-12 {
-                                    // тайлинг (этап 7): (1,1) — как раньше
-                                    // (clamp к краю); иначе repeat через fract
-                                    let uf = tiled_coord(uq / iwp, tu);
-                                    let vf = tiled_coord(vq / iwp, tv);
-                                    let uu = (uf.clamp(0.0, 0.99999) * tw as f32) as usize;
-                                    let vv = (vf.clamp(0.0, 0.99999) * th as f32) as usize;
-                                    let ti = (vv * tw + uu) * 4;
-                                    let texel = &t.px[ti..ti + 4];
-                                    // alpha-test (этап 7): discard ДО записи z —
-                                    // за дыркой билборда видно то, что позади
-                                    if alpha_on && !alpha_keep(texel[3], alpha_thr) {
-                                        continue;
+                                // тайлинг (этап 7): (1,1) — clamp к краю,
+                                // иначе repeat через fract
+                                let uf = tiled_coord(uq / iwp, tu);
+                                let vf = tiled_coord(vq / iwp, tv);
+                                let uu = (uf.clamp(0.0, 0.99999) * tw as f32) as usize;
+                                let vv = (vf.clamp(0.0, 0.99999) * th as f32) as usize;
+                                let ti = (vv * tw + uu) * 4;
+                                let texel = &t.px[ti..ti + 4];
+                                // alpha-test (этап 7, только opaque): discard
+                                // ДО записи z — за дыркой видно то, что позади
+                                if alpha_on && !blend_pass && !alpha_keep(texel[3], alpha_thr) {
+                                    continue;
+                                }
+                                if blend_pass {
+                                    al *= texel[3] as f32 / 255.0;
+                                    if al <= 0.004 {
+                                        continue; // полностью прозрачно
                                     }
-                                    if spec_on || fog_on {
-                                        let mut c0 =
-                                            (texel[0] as f64 / 255.0 * tr as f64 * shade as f64)
-                                                as f32;
-                                        let mut c1 =
-                                            (texel[1] as f64 / 255.0 * tg as f64 * shade as f64)
-                                                as f32;
-                                        let mut c2 =
-                                            (texel[2] as f64 / 255.0 * tb as f64 * shade as f64)
-                                                as f32;
-                                        if spec_on {
-                                            c0 = (c0 + s).min(1.0);
-                                            c1 = (c1 + s).min(1.0);
-                                            c2 = (c2 + s).min(1.0);
-                                        }
-                                        if fog_on {
-                                            let g = 1.0 - fogf;
-                                            c0 = c0 * g + fog_r * fogf;
-                                            c1 = c1 * g + fog_g * fogf;
-                                            c2 = c2 * g + fog_b * fogf;
-                                        }
-                                        r3.zbuf[pi] = z;
-                                        fb[o] = col(c0 as f64);
-                                        fb[o + 1] = col(c1 as f64);
-                                        fb[o + 2] = col(c2 as f64);
-                                        fb[o + 3] = 255;
-                                    } else {
-                                        // lambert · тинт · тексель (как раньше)
-                                        r3.zbuf[pi] = z;
-                                        fb[o] =
-                                            col(texel[0] as f64 / 255.0 * tr as f64 * shade as f64);
-                                        fb[o + 1] =
-                                            col(texel[1] as f64 / 255.0 * tg as f64 * shade as f64);
-                                        fb[o + 2] =
-                                            col(texel[2] as f64 / 255.0 * tb as f64 * shade as f64);
-                                        fb[o + 3] = 255;
-                                    }
-                                } else {
-                                    // деградированный iw — как раньше: z пишется,
-                                    // цвет нет
-                                    r3.zbuf[pi] = z;
                                 }
-                            } else if spec_on || fog_on {
-                                let mut c0 = tr * shade;
-                                let mut c1 = tg * shade;
-                                let mut c2 = tb * shade;
-                                if spec_on {
-                                    c0 = (c0 + s).min(1.0);
-                                    c1 = (c1 + s).min(1.0);
-                                    c2 = (c2 + s).min(1.0);
-                                }
-                                if fog_on {
-                                    let g = 1.0 - fogf;
-                                    c0 = c0 * g + fog_r * fogf;
-                                    c1 = c1 * g + fog_g * fogf;
-                                    c2 = c2 * g + fog_b * fogf;
-                                }
+                                c0 *= texel[0] as f32 / 255.0;
+                                c1 *= texel[1] as f32 / 255.0;
+                                c2 *= texel[2] as f32 / 255.0;
+                            } else if blend_pass && al <= 0.004 {
+                                continue;
+                            }
+                            if spec_on {
+                                c0 = (c0 + s).min(1.0);
+                                c1 = (c1 + s).min(1.0);
+                                c2 = (c2 + s).min(1.0);
+                            }
+                            if fog_on {
+                                let g = 1.0 - fogf;
+                                c0 = c0 * g + fog_r * fogf;
+                                c1 = c1 * g + fog_g * fogf;
+                                c2 = c2 * g + fog_b * fogf;
+                            }
+                            let o = pi * 4;
+                            if blend_pass {
+                                // src-alpha блендинг поверх кадра; z-буфер
+                                // НЕ пишется (порядок даёт сорт far→near)
+                                let dr = fb[o] as f32 / 255.0;
+                                let dg = fb[o + 1] as f32 / 255.0;
+                                let db = fb[o + 2] as f32 / 255.0;
+                                let iv = 1.0 - al;
+                                fb[o] = col((c0 * al + dr * iv) as f64);
+                                fb[o + 1] = col((c1 * al + dg * iv) as f64);
+                                fb[o + 2] = col((c2 * al + db * iv) as f64);
+                            } else {
                                 r3.zbuf[pi] = z;
                                 fb[o] = col(c0 as f64);
                                 fb[o + 1] = col(c1 as f64);
                                 fb[o + 2] = col(c2 as f64);
-                                fb[o + 3] = 255;
-                            } else {
-                                r3.zbuf[pi] = z;
-                                fb[o] = cr;
-                                fb[o + 1] = cg;
-                                fb[o + 2] = cb;
-                                fb[o + 3] = 255;
                             }
+                            fb[o + 3] = 255;
                         }
                     }
                 }
@@ -1008,6 +1294,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         // 2D-слой, чтобы он не «всплыл» посреди 3D-кадра
         let _ = h.flush_gpu();
         h.r3.reset(w, hh);
+        h.r3.transq.clear();
         h.fill_all(r, g, b);
         h.r3.zbuf.fill(f32::INFINITY);
         h.r3.drawn = 0;
@@ -1106,6 +1393,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             ]),
         );
         t.insert("alpha-test".into(), Value::Float(r3.alpha_test as f64));
+        t.insert("blend".into(), Value::Float(r3.blend as f64));
         t.insert(
             "fog".into(),
             Value::List(vec![
@@ -1116,6 +1404,66 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             ]),
         );
         Ok(Value::Table(Rc::new(RefCell::new(t))))
+    });
+
+    // alpha-blend (этап 9): (gpu3d-alpha-blend opacity) — равномерная альфа
+    // материала; всё с итоговой альфой < 1 уходит в прозрачную очередь
+    // (gpu3d-flush-alpha: сорт far→near, src-alpha блендинг, без z-записи).
+    // 1 (или 0) = непрозрачно, прежнее поведение.
+    let hc = hal.clone();
+    def(env, "gpu3d-alpha-blend", move |args| {
+        need(args, 1)?;
+        let mut h = hc.borrow_mut();
+        h.r3.blend = num_val(&args[0])?.clamp(0.0, 1.0) as f32;
+        Ok(Value::Nil)
+    });
+
+    // дренаж прозрачной очереди: сорт far→near + блендинг
+    let hc = hal.clone();
+    def(env, "gpu3d-flush-alpha", move |_: &[Value]| {
+        let mut h = hc.borrow_mut();
+        let n = flush_transparent(&mut h)?;
+        Ok(Value::Int(n as i64))
+    });
+
+    // mesh с per-vertex RGBA (этап 9):
+    // (gpu3d-mesh-vc pos uv rgba idx model mvp [tex]) — rgba: n*4 f32 0..1;
+    // альфа/цвет градиентны (вода: френель/пена/глубина; тени: glow).
+    // uv обязателен при tex ≠ 0; tex 0 = без текстуры. Вершины с альфой < 1 —
+    // в прозрачную очередь.
+    let hc = hal.clone();
+    def(env, "gpu3d-mesh-vc", move |args| {
+        let n = args.len();
+        if n != 7 && n != 8 {
+            return Err("gpu3d-mesh-vc: (pos uv rgba idx model mvp [tex])".into());
+        }
+        let pos = to_f32s(&args[0])?;
+        let uv = to_f32s(&args[1])?;
+        let rgba = to_f32s(&args[2])?;
+        let idx = to_f32s(&args[3])?;
+        let model = to_f32s(&args[4])?;
+        let mvp = to_f32s(&args[5])?;
+        let texid = if n == 8 {
+            crate::interp::int_val(&args[6])?
+        } else {
+            0
+        };
+        let mut h = hc.borrow_mut();
+        let drawn = mesh_draw(
+            &mut h,
+            &pos,
+            Some(&uv),
+            Some(&rgba),
+            &idx,
+            &model,
+            &mvp,
+            1.0,
+            1.0,
+            1.0,
+            texid,
+            Prim::Tri,
+        )?;
+        Ok(Value::Int(drawn as i64))
     });
 
     let hc = hal.clone();
@@ -1132,6 +1480,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let n = mesh_draw(
             &mut h,
             &pos,
+            None,
             None,
             &idx,
             &model,
@@ -1164,6 +1513,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             &mut h,
             &pos,
             Some(&uv),
+            None,
             &idx,
             &model,
             &mvp,
@@ -1219,6 +1569,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let n = mesh_draw(
             &mut h,
             &pos,
+            None,
             None,
             &idx,
             &model,
@@ -1364,6 +1715,166 @@ mod tests {
         assert!(близко(r3.light[0], 0.45)); // дефолт
     }
 
+    // ——— этап 9: прозрачная очередь, блендинг, mesh-vc ———
+
+    /// Квадрат-во-весь-экран своего цвета на глубине z (плоский свет).
+    fn квадрат_цвета(hal: &mut Hal, z: f32, r: f64, g: f64, b: f64) {
+        let pos = [-1.0f32, -1.0, z, 1.0, -1.0, z, 1.0, 1.0, z, -1.0, 1.0, z];
+        let idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
+        let mm = ед_матрицы();
+        let (model, mvp) = (&mm[0..16], &mm[16..32]);
+        mesh_draw(
+            hal,
+            &pos,
+            None,
+            None,
+            &idx,
+            model,
+            mvp,
+            r,
+            g,
+            b,
+            0,
+            Prim::Tri,
+        )
+        .unwrap();
+    }
+
+    /// Квадрат с обратной (CW) ориентацией — задняя сторона.
+    fn квадрат_тыл(hal: &mut Hal, z: f32, r: f64, g: f64, b: f64) {
+        let pos = [-1.0f32, -1.0, z, 1.0, -1.0, z, 1.0, 1.0, z, -1.0, 1.0, z];
+        let idx = [0.0f32, 2.0, 1.0, 0.0, 3.0, 2.0];
+        let mm = ед_матрицы();
+        let (model, mvp) = (&mm[0..16], &mm[16..32]);
+        mesh_draw(
+            hal,
+            &pos,
+            None,
+            None,
+            &idx,
+            model,
+            mvp,
+            r,
+            g,
+            b,
+            0,
+            Prim::Tri,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn блендинг_сорт_far_near_сквозной() {
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет_плоский(&mut hal);
+        hal.r3.blend = 0.5;
+        // порядок постановки НЕ важен: далёкий зелёный, близкий красный
+        квадрат_цвета(&mut hal, 0.9, 0.0, 1.0, 0.0);
+        квадрат_цвета(&mut hal, 0.5, 1.0, 0.0, 0.0);
+        flush_transparent(&mut hal).unwrap();
+        // far→near: зелёный 0.5 поверх чёрного → (0, 128, 0);
+        // красный 0.5 поверх → (128, 64, 0). Перепутанный порядок дал бы
+        // (128, 128, 0).
+        let c = пиксель(&hal, 4, 4);
+        assert_eq!(c, [128, 64, 0, 255], "сорт far→near сломан: {:?}", c);
+        // z-записи нет: z-буфер в точке остался бесконечным
+        assert!(hal.r3.zbuf[4 * 8 + 4].is_infinite());
+    }
+
+    #[test]
+    fn блендинг_z_тест_в_обе_стороны() {
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет_плоский(&mut hal);
+        // непрозрачный КРАСНЫЙ вписывается первым на z=0.6
+        hal.r3.blend = 1.0;
+        квадрат_цвета(&mut hal, 0.6, 1.0, 0.0, 0.0);
+        // прозрачный ЗЕЛЁНЫЙ ПЕРЕД ним (z=0.4): блендинг поверх
+        hal.r3.blend = 0.5;
+        квадрат_цвета(&mut hal, 0.4, 0.0, 1.0, 0.0);
+        // прозрачный СИНИЙ ЗА ним (z=0.8): z-тест не пропускает
+        квадрат_цвета(&mut hal, 0.8, 0.0, 0.0, 1.0);
+        flush_transparent(&mut hal).unwrap();
+        let c = пиксель(&hal, 4, 4);
+        // 0.5 зелёного поверх красного
+        assert_eq!(c[0], col(0.5));
+        assert_eq!(c[1], col(0.5));
+        assert_eq!(c[2], 0, "синий за непрозрачным не должен пройти z-тест");
+    }
+
+    #[test]
+    fn прозрачный_проход_двусторонний() {
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет_плоский(&mut hal);
+        hal.r3.blend = 0.6;
+        // задняя сторона: opaque-проход её отрисовал бы (куллинг), прозрачный —
+        // обязан рисовать (листва видна с обеих сторон)
+        квадрат_тыл(&mut hal, 0.5, 1.0, 1.0, 0.0);
+        flush_transparent(&mut hal).unwrap();
+        let c = пиксель(&hal, 4, 4);
+        assert_eq!(c[0], col(0.6));
+        assert_eq!(c[1], col(0.6));
+    }
+
+    #[test]
+    fn mesh_vc_градиент_альфы_перспектива_корректна() {
+        // альфа 1 слева → 0 справа, цвет красный: пиксель x=1 (u=-0.625) →
+        // a = (1-u)/2 = 0.8125 → красный 207 поверх чёрного фона
+        let pos = [
+            -1.0f32, -1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5, -1.0, 1.0, 0.5,
+        ];
+        let rgba = [
+            1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+        ];
+        let idx = [0.0f32, 1.0, 2.0, 0.0, 2.0, 3.0];
+        let mm = ед_матрицы();
+        let (model, mvp) = (&mm[0..16], &mm[16..32]);
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет_плоский(&mut hal);
+        mesh_draw(
+            &mut hal,
+            &pos,
+            None,
+            Some(&rgba),
+            &idx,
+            model,
+            mvp,
+            1.0,
+            1.0,
+            1.0,
+            0,
+            Prim::Tri,
+        )
+        .unwrap();
+        flush_transparent(&mut hal).unwrap();
+        let c = пиксель(&hal, 1, 4);
+        assert_eq!(c[0], col(0.8125), "градиент альфы: {:?}", c);
+        assert_eq!(c[1], 0);
+        // правый край: центр последнего пикселя u=0.875 → a=(1-u)/2=0.0625
+        let c2 = пиксель(&hal, 7, 4);
+        assert_eq!(c2, [col(0.0625), 0, 0, 255]);
+    }
+
+    #[test]
+    fn очередь_чистится_clear_и_flush() {
+        let mut hal = Hal::new(OutputMode::Silent, 8, 8);
+        hal.fill_all(0, 0, 0);
+        свет_плоский(&mut hal);
+        hal.r3.blend = 0.5;
+        квадрат_цвета(&mut hal, 0.5, 1.0, 1.0, 1.0);
+        assert_eq!(hal.r3.transq.len(), 2); // 2 треугольника квада
+        flush_transparent(&mut hal).unwrap();
+        assert!(hal.r3.transq.is_empty());
+        // clear тоже чистит (забытый flush не портит следующий кадр)
+        квадрат_цвета(&mut hal, 0.5, 1.0, 1.0, 1.0);
+        hal.r3.reset(8, 8);
+        hal.r3.transq.clear();
+        assert!(hal.r3.transq.is_empty());
+    }
+
     // ——— интеграционные: растр этапа 7 через mesh_draw (программный путь) ——
 
     use crate::hal::{Hal, OutputMode, Tex};
@@ -1380,6 +1891,14 @@ mod tests {
         out
     }
 
+    /// Плоский свет для растровых тестов: ambient 1, diffuse 0 → цвет = тексель·тинт.
+    fn свет_плоский(hal: &mut Hal) {
+        сброс_света(hal);
+        hal.r3.light = [0.0, 0.0, 1.0];
+        hal.r3.ambient = 1.0;
+        hal.r3.diffuse = 0.0;
+    }
+
     /// Квадрат на глубине z во весь экран 8x8 (CCW-лицевой после y-flip).
     fn рисуем_квадрат(hal: &mut Hal, tex: i64, z: f32, uv: &[f32]) {
         let pos = [-1.0f32, -1.0, z, 1.0, -1.0, z, 1.0, 1.0, z, -1.0, 1.0, z];
@@ -1390,6 +1909,7 @@ mod tests {
             hal,
             &pos,
             Some(uv),
+            None,
             &idx,
             model,
             mvp,
@@ -1417,6 +1937,8 @@ mod tests {
         hal.r3.view = [0.0, 0.0, 0.0];
         hal.r3.tiling = [1.0, 1.0];
         hal.r3.fog = [0.7, 0.8, 0.9, 0.0];
+        hal.r3.blend = 1.0;
+        hal.r3.transq.clear();
     }
 
     #[test]
@@ -1479,7 +2001,7 @@ mod tests {
         });
         hal.tex.push(зелёный());
         hal.fill_all(0, 0, 0);
-        плоский_свет(&mut hal);
+        свет_плоский(&mut hal);
         рисуем_квадрат(&mut hal, 2, 0.9, &uv);
         assert_eq!(пиксель(&hal, 0, 0), [0, 255, 0, 255]);
         рисуем_квадрат(&mut hal, 1, 0.5, &uv);
@@ -1600,7 +2122,7 @@ mod tests {
         let mut hal = Hal::new(OutputMode::Silent, 8, 8);
         hal.tex.push(tex.clone());
         hal.fill_all(0, 0, 0);
-        плоский_свет(&mut hal);
+        свет_плоский(&mut hal);
         рисуем_квадрат(&mut hal, 1, 0.5, &uv);
         assert_eq!(пиксель(&hal, 4, 4), [0, 0, 255, 255]);
         // край u=0 → столбец 0 (красный)

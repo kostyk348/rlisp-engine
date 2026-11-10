@@ -1,6 +1,6 @@
-ISLAND: остров(песок/трава/камень)/вода/деревья/камни/glTF готовы;  масштаб моделей: bottle  4.415593  lantern  0.336064
+ISLAND GFX2: PNG-текстуры/alpha-blend/вода-fresnel+пена/пальмы/тени/облака готовы
 rlisp-engine ISLAND: HAL(+GPU) → render3d → материалы → glTF → сцена; update/draw на Lisp
 rlisp-engine v0.3 | SIMD: AVX2 | рендер: программный растр | экран 320x240 | lisp-файлов: 10 | скрипт: assets/lisp/main_island.lisp
-ISLAND fps: 39.343693
-ISLAND fps: 40.852987
-итог: кадров 240 за 5.7с (42.1 fps) | hot-reload: 0 | score: ?
+ISLAND fps: 27.582733
+ISLAND fps: 28.227378
+итог: кадров 240 за 8.4с (28.7 fps) | hot-reload: 0 | score: ?
