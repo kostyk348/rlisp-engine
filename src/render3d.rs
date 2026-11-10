@@ -659,6 +659,31 @@ pub(crate) fn batch_draw(
     mvp: &[f32],
     texid: i64,
 ) -> Result<u64, String> {
+    batch_draw_impl(hal, pos, uv, idx, insts, mvp, texid, false)
+}
+
+/// Этап 16: батч с ГОТОВЫМИ матрицами инстансов (скелетная анимация).
+/// Формат инстанса: 20 f32 = матрица 4×4 (строчная, аффинная) + r g b a.
+pub(crate) fn batch_draw_mat(
+    hal: &mut Hal,
+    pos: &[f32],
+    idx: &[f32],
+    insts: &[f32],
+    mvp: &[f32],
+) -> Result<u64, String> {
+    batch_draw_impl(hal, pos, None, idx, insts, mvp, 0, true)
+}
+
+fn batch_draw_impl(
+    hal: &mut Hal,
+    pos: &[f32],
+    uv: Option<&[f32]>,
+    idx: &[f32],
+    insts: &[f32],
+    mvp: &[f32],
+    texid: i64,
+    mat_mode: bool,
+) -> Result<u64, String> {
     // wgpu-режим: сброс отложенного 2D-слоя перед программным 3D-батчем
     let _ = hal.flush_gpu();
     if pos.len() % 3 != 0 || pos.is_empty() {
@@ -668,8 +693,13 @@ pub(crate) fn batch_draw(
     if idx.len() % 3 != 0 {
         return Err("gpu3d-batch: индексы — тройки вершин".into());
     }
-    if insts.len() % 12 != 0 {
-        return Err("gpu3d-batch: инстансы — по 12 f32 (t.xyz s.xyz yaw pitch roll r g b)".into());
+    let stride = if mat_mode { 20 } else { 12 };
+    if insts.len() % stride != 0 {
+        return Err(if mat_mode {
+            "gpu3d-batch-mat: инстансы — по 20 f32 (матрица 4×4 + r g b a)".into()
+        } else {
+            "gpu3d-batch: инстансы — по 12 f32 (t.xyz s.xyz yaw pitch roll r g b)".into()
+        });
     }
     if insts.is_empty() {
         return Ok(0); // пустой батч — ничего не рисуем (врагов пока нет)
@@ -677,7 +707,7 @@ pub(crate) fn batch_draw(
     if mvp.len() != 16 {
         return Err("gpu3d-batch: mvp 4x4 = 16 чисел".into());
     }
-    let k = insts.len() / 12;
+    let k = insts.len() / stride;
     if k * n * 3 > 8_000_000 {
         return Err("gpu3d-batch: слишком много вершин".into());
     }
@@ -700,8 +730,12 @@ pub(crate) fn batch_draw(
     let mut m: [f32; 16] = [0.0; 16];
 
     for i in 0..k {
-        let ins = &insts[i * 12..(i + 1) * 12];
-        inst_matrix(ins, &mut m);
+        let ins = &insts[i * stride..(i + 1) * stride];
+        if mat_mode {
+            m.copy_from_slice(&ins[0..16]);
+        } else {
+            inst_matrix(ins, &mut m);
+        }
         let base = i * n;
         for vi in 0..n {
             let x = pos[vi * 3];
@@ -721,9 +755,15 @@ pub(crate) fn batch_draw(
                 uvq.push(u[vi * 2]);
                 uvq.push(u[vi * 2 + 1]);
             }
-            tint.push(ins[9]);
-            tint.push(ins[10]);
-            tint.push(ins[11]);
+            if mat_mode {
+                tint.push(ins[16]);
+                tint.push(ins[17]);
+                tint.push(ins[18]);
+            } else {
+                tint.push(ins[9]);
+                tint.push(ins[10]);
+                tint.push(ins[11]);
+            }
         }
         for &j in idx {
             idx_all.push(j + base as f32);
@@ -1687,6 +1727,20 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let mvp = to_f32s(&args[3])?;
         let mut h = hc.borrow_mut();
         let n = batch_draw(&mut h, &pos, None, &idx, &insts, &mvp, 0)?;
+        Ok(Value::Int(n as i64))
+    });
+
+    // матричный батч (этап 16): (gpu3d-batch-mat pos idx mats mvp) —
+    // инстансы по 20 f32: матрица 4×4 + цвет; источник — skel-batch!
+    let hc = hal.clone();
+    def(env, "gpu3d-batch-mat", move |args| {
+        need(args, 4)?;
+        let pos = to_f32s(&args[0])?;
+        let idx = to_f32s(&args[1])?;
+        let mats = to_f32s(&args[2])?;
+        let mvp = to_f32s(&args[3])?;
+        let mut h = hc.borrow_mut();
+        let n = batch_draw_mat(&mut h, &pos, &idx, &mats, &mvp)?;
         Ok(Value::Int(n as i64))
     });
 

@@ -12,6 +12,10 @@
 (defpersistent *parts* 0)
 (defpersistent *splash-n* 0)
 (define *parts-out* (make-f32vec 32768 0.0))
+;; ——— скелет (этап 16): кроны пальм под ветром ———
+(defpersistent *skel* 0)
+(defpersistent *palm-bones* '())
+(define *skel-batch* (make-f32vec 8192 0.0))
 
 ;; ——— рельеф: остров с пляжем и шумом ———
 (define *pa* 30.0)                 ; полуразмер
@@ -208,6 +212,29 @@
     (quad 0 0 -0.5  0 0 0.5  0 1 0.5  0 1 -0.5)
     (list (f32-from-list pos) (f32-from-list idx))))
 ;; один identity-инстанс рисует мировой меш стволов целиком
+
+;; ——— скелет крон (этап 16): на пальму — кость-крона и 6 костей-листьев
+(define (build-palm-skel!)
+  (define (go palms acc)
+    (if (null? palms)
+        (set! *palm-bones* (reverse acc))
+        (let* ((p (car palms))
+               (px (car p)) (pz (cadr p))
+               (top (+ (pp-h px pz) 3.1))
+               (crown (skel-add! *skel* -1 (+ px 0.42) (+ top 0.10) pz))
+               (base (* px 0.7)))
+          (define (f k acc2)
+            (if (>= k 6)
+                acc2
+                (let* ((b (skel-add! *skel* crown 0.0 0.0 0.0))
+                       (ya (+ base (* k 1.047) (hash2 k 31)))
+                       (dr (+ 0.55 (hash2 k 37) 0.2)))
+                  (skel-rot! *skel* b ya dr 0.0)
+                  (skel-scale! *skel* b 3.0 1.0 3.0)
+                  (f (+ k 1) (cons b acc2)))))
+          (go (cdr palms)
+              (cons (cons crown (reverse (f 0 '()))) acc)))))
+  (go *palms* '()))
 (define *trunk-insts* (list 0 0 0 1 1 1 0 0 0 0.85 0.72 0.60))
 
 ;; ——— кокосы: сфера 7×10, инстансы из физики ———
@@ -349,7 +376,9 @@
     (gpu3d-alpha-blend 1.0)
     (draw-batch (list (car *palm-mesh*) (cadr *palm-mesh*)) *trunk-insts* mvp)
     (gpu3d-alpha-blend 0.97)
-    (draw-batch *frond-mesh* (caddr *palm-mesh*) mvp)
+    ;; листья: скелетная анимация (этап 16) — матрицы костей → batch-mat
+    (skel-batch! *skel* *skel-batch* 0.24 0.52 0.22)
+    (gpu3d-batch-mat (car *frond-mesh*) (cadr *frond-mesh*) *skel-batch* mvp)
     (gpu3d-alpha-blend 1.0)
     ;; кокосы (opaque, качение через roll)
     (draw-batch *cnut-mesh* (cnut-insts) mvp)
@@ -410,7 +439,9 @@
   (draw-text (string-append "FPS " (number->string *fps-last-val*)
                             "  PARTS " (number->string (part-n *parts*)))
              6 21 1 (list 0.7 0.9 0.6))
-  (draw-text "A/D camera  R reset" 6 29 1 (list 0.85 0.85 0.7)))
+  (draw-text (string-append "A/D camera  R reset  BONES "
+                            (number->string (skel-n *skel*)))
+             6 29 1 (list 0.85 0.85 0.7)))
 
 (define (draw)
   (draw-sky)
@@ -429,6 +460,33 @@
   (spawn-impacts!)
   (update-ripples! dt)
   (part-step! *parts* dt 0.0 -14.0 0.0 0.6)
+  ;; ветер: крона качается, листья трепещут с фазовым сдвигом
+  (define (wind palms bones)
+    (if (null? palms)
+        #f
+        (let* ((p (car palms))
+               (px (car p))
+               (phase (* px 0.7))
+               (crown (car (car bones)))
+               (fronds (cdr (car bones)))
+               (w (+ (* 0.10 (sin (+ (* *t* 1.1) phase)))
+                     (* 0.06 (sin (+ (* *t* 2.3) (* phase 1.7)))))))
+          (define (f k bs)
+            (if (null? bs)
+                #f
+                (let* ((b (car bs))
+                       (ya (* px 0.7))
+                       (yaw (+ ya (* k 1.047) (hash2 k 31)))
+                       (dr (+ 0.55 (hash2 k 37) 0.2)))
+                  (skel-rot! *skel* b yaw
+                             (+ dr (* 0.05 (sin (+ (* *t* 2.7)
+                                                   (* k 1.3) phase))))
+                             0.0)
+                  (f (+ k 1) (cdr bs)))))
+          (f 0 fronds)
+          (skel-rot! *skel* crown 0.0 0.0 w)
+          (wind (cdr palms) (cdr bones)))))
+  (wind *palms* *palm-bones*)
   (if (= 0 (mod *frame* 4)) (update-water!) #f)
   (if (>= *frame* (+ *fps-last* 120.0))
       (begin
@@ -441,5 +499,8 @@
 (define *fps-clock* (time-now))
 (set! *parts* (part-new))
 (part-seed! *parts* 7311)
+(if (= 0 (skel-n *skel*))
+    (build-palm-skel!)
+    #f)
 (spawn-cnuts!)
 (print "PHYS POLY: сферы+хайтфилд+вода на нативах phys-*; A/D камера, R сброс")

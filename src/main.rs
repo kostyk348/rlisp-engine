@@ -24,6 +24,7 @@ mod physics;
 mod png;
 mod render3d;
 mod simd;
+mod skel;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
@@ -203,6 +204,7 @@ pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     physics::register(env, Rc::new(RefCell::new(Vec::new())));
     ecs::register(env, Rc::new(RefCell::new(Vec::new())));
     particles::register(env, Rc::new(RefCell::new(Vec::new())));
+    skel::register(env, Rc::new(RefCell::new(Vec::new())));
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
