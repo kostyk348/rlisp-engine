@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Тесты (релиз не выходит красным)
+        run: cargo test --release
+      - name: Нативный бинарник
+        run: cargo build --release
+      - name: WASM
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Смоук wasm
+        run: node scripts/wasm_smoke.js target/wasm32-unknown-unknown/release/rlisp-engine.wasm assets/lisp/main_physpoly.lisp 30
+      - name: Пакет нативного бинарника
+        run: |
+          mkdir -p dist/rlisp-engine-linux-x64
+          cp target/release/rlisp-engine dist/rlisp-engine-linux-x64/
+          cp -r assets/lisp dist/rlisp-engine-linux-x64/lisp
+          cp README.md CHANGELOG.md LIMITATIONS.md dist/rlisp-engine-linux-x64/
+          tar -czf dist/rlisp-engine-v${GITHUB_REF_NAME}-linux-x64.tar.gz -C dist rlisp-engine-linux-x64
+      - name: Собрать dist
+        run: |
+          cp target/wasm32-unknown-unknown/release/rlisp-engine.wasm dist/
+          cp docs/playground.html dist/rlisp_playground.html
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/rlisp-engine-v*-linux-x64.tar.gz
+            dist/rlisp-engine.wasm
+            dist/rlisp_playground.html
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true

@@ -1152,7 +1152,7 @@ fn run_engine(args: &Args) -> Result<(), String> {
     let n_files = files.len();
 
     println!(
-        "rlisp-engine v0.3 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
+        "rlisp-engine v0.11 | SIMD: {} | рендер: {} | экран {}x{} | lisp-файлов: {} | скрипт: {}",
         simd::level_name(simd::detect()),
         render_note,
         w,
