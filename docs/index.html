@@ -145,7 +145,9 @@
     <a class="nav" href="#features">Возможности</a>
     <a class="nav" href="#demos">Демо</a>
     <a class="nav" href="#bench">Бенчмарки</a>
+    <a class="nav" href="#graphon">Графон</a>
     <a class="nav" href="#honest">Честность</a>
+    <a class="nav" href="en.html" style="font-family:var(--mono)">EN | <b style="color:var(--accent)">RU</b></a>
     <a class="cta" href="playground.html">Открыть песочницу →</a>
   </div>
 </nav>
@@ -153,11 +155,11 @@
 <header class="hero">
   <div class="wrap">
     <div class="badges">
-      <img src="https://img.shields.io/badge/tests-98%20passing-7ee787" alt="tests">
+      <img src="https://img.shields.io/badge/tests-104%20passing-7ee787" alt="tests">
       <img src="https://img.shields.io/badge/dependencies-0-critical" alt="deps 0">
       <img src="https://img.shields.io/badge/wasm-sandbox%20~1MB-79c0ff" alt="wasm">
       <img src="https://img.shields.io/badge/license-MIT-8b93a7" alt="MIT">
-      <img src="https://img.shields.io/badge/CI-6%20jobs%20%2B%20release-ffb347" alt="CI">
+      <img src="https://img.shields.io/badge/CI-7%20jobs%20%2B%20release-ffb347" alt="CI">
     </div>
     <h1>Игровой движок<br>как <span class="grad">Lisp-машина</span></h1>
     <p class="sub">
@@ -168,18 +170,18 @@
     </p>
     <div class="hero-cta">
       <a class="btn btn-main" href="playground.html">Играть в браузере — без сборки</a>
-      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Скачать v0.13.0</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Скачать v0.14.0</a>
       <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine">GitHub →</a>
     </div>
     <div class="hero-gif">
       <img src="img/physpoly.gif" alt="Физполигон: NGS-физика, ветер в кронах, брызги частиц" loading="lazy">
-      <div class="cap">«ФИЗПОЛИГОН» — NGS-солвер с честным качением, ветер в скелете крон, брызги частиц, рябь по событиям физики. 400×300, программный растр.</div>
+      <div class="cap">«ФИЗПОЛИГОН» — NGS-солвер с честным качением, ветер в скелете крон, атмосферное небо с солнцем и облаками, bloom и зерно. 400×300, программный растр.</div>
     </div>
 
     <div class="numbers">
       <div class="num"><b>0</b><span>зависимостей Cargo</span></div>
       <div class="num"><b>234×</b><span>JIT смешанного ядра</span></div>
-      <div class="num"><b>98</b><span>тестов (+6 JIT)</span></div>
+      <div class="num"><b>104</b><span>теста (+6 с JIT)</span></div>
       <div class="num"><b>~1 МБ</b><span>весь движок в WASM</span></div>
       <div class="num"><b>28</b><span>костей в сцене</span></div>
       <div class="num"><b>4096</b><span>частиц в пуле</span></div>
@@ -208,6 +210,10 @@
         <p>Программный конвейер: T&amp;L, z-буфер, вершинные цвета, текстуры с тайлингом, туман, alpha-проход с painter's sort, батчинг инстансов. <b>wgpu-бэкенд за тем же фасадом HAL</b> — Lisp не меняется.</p></div>
       <div class="card"><h3><span class="ic">🛠️</span>Редактор аля Unity</h3>
         <p>Дерево сцены, гизмо-манипуляторы, инспектор, сохранение сцены в Lisp-файл, <b>hot reload</b> без перезапуска. AI Ready: MCP-сервер — агент управляет движком.</p></div>
+      <div class="card"><h3><span class="ic">🎬</span>Пост-обработка (этап 19)</h3>
+        <p><b>gpu3d-post</b>: bloom (избыток над порогом → downsample ¼ → box-blur), экспозиция с мягким плечом (средние тона не тронуты), виньетка, детерминированное зерно (хэш, без rand). ~0.6 мс на 400×300.</p></div>
+      <div class="card"><h3><span class="ic">🌤️</span>Атмосфера (этап 20)</h3>
+        <p>Небодом с градиентом, солнце-диск с bloom-ореолом, <b>дрейфующие облака</b> (процедурная текстура, радиальный силуэт), blob-тени под телами, <b>глиттер воды</b> — всё из Lisp поверх существующих нативов.</p></div>
       <div class="card"><h3><span class="ic">🔊</span>Чиптюн-аудио</h3>
         <p>Zero-dep синтез: осцилляторы, ADSR-конверты, музыкальные партии — и <b>WebAudio в песочнице</b> поверх событий физики.</p></div>
     </div>
@@ -258,6 +264,19 @@
   </div>
 </section>
 
+<section id="graphon">
+  <div class="wrap">
+    <h2>Графон: до и после <span class="tag">этапы 19–20</span></h2>
+    <p class="lead">Та же сцена, тот же программный растр 400×300 — только пост-обработка и атмосфера. Слева v0.13, справа v0.14.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/physpoly_before.png" alt="До: v0.13" loading="lazy">
+        <div class="cap"><b>До (v0.13)</b>плоский фон-заливка, статичная вода, никаких теней — тела «плавают» над песком.</div></div>
+      <div class="demo"><img src="img/physpoly_still1.png" alt="После: v0.14" loading="lazy">
+        <div class="cap"><b>После (v0.14)</b>небодом + солнце в bloom, облачный горизонт, blob-тени, глиттер воды, bloom/виньетка/зерно.</div></div>
+    </div>
+  </div>
+</section>
+
 <section id="bench">
   <div class="wrap">
     <h2>Бенчмарки <span class="tag">честная методология</span></h2>
@@ -269,6 +288,7 @@
         <tr><td><b>JIT</b> покрытие этапа 15</td><td>смешанное ядро: ветвление+клампа+floor, 100k</td><td><b>≈234×</b> (20059 → 86 нс)</td></tr>
         <tr><td><b>SIMD</b>-токенизатор</td><td>59 КБ реальных Lisp-исходников ×200</td><td>1.07× (критерий ≥3× — <b>не достигнут, честно</b>)</td></tr>
         <tr><td><b>Физика</b></td><td>«Физполигон», 400×300, headless</td><td><b>~29 fps</b> с частицами и скелетом</td></tr>
+        <tr><td><b>Пост-обработка</b></td><td>bloom+плечо+виньетка+зерно, 400×300</td><td><b>~0.6 мс</b>/кадр (release)</td></tr>
         <tr><td><b>WASM</b></td><td>песочница в Chromium</td><td><b>22 fps</b> физика / 52 fps 2D</td></tr>
       </table>
     </div>
@@ -283,6 +303,8 @@
       <p><b>Сопротивление качению не моделируется</b> — идеальная сфера катится вечно: трение гасит только проскальзывание.</p>
       <p><b>SIMD-токенизатор: 1.07× вместо критерия 3×</b> — анализ и план лечения (интернирование символов, pshufb) в docs/benchmark.md.</p>
       <p><b>Скиннинг по весам вершин не сделан</b> — скелет анимирует инстансы (матрица на кость), не вершины меша.</p>
+      <p><b>Облака — билборды с процедурной текстурой</b>, не объёмные: texel-альфа сэмплером не учитывается (блендер — константа прохода), поэтому силуэт решён радиальным спадом яркости.</p>
+      <p><b>Атмосфера стоит ~27% fps</b> (24 → 17.5): глиттер воды — Lisp-цикл по 625 вершинам; разложение на векторные нативы — кандидат оптимизации.</p>
       <p><b>wgpu-бэкенд</b> — offscreen + readback; оконного swapchain нет.</p>
       <p>Полный список — <a href="https://github.com/kostyk348/rlisp-engine/blob/master/LIMITATIONS.md">LIMITATIONS.md</a>, обновляется каждый этап.</p>
     </div>

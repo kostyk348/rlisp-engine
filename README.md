@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
-![Tests](https://img.shields.io/badge/tests-98%20passing-7ee787)
+![Tests](https://img.shields.io/badge/tests-104%20passing-7ee787)
 ![Deps](https://img.shields.io/badge/dependencies-0-critical)
 [![Pages](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/pages.yml)
 [English](README.en.md) | Русский
@@ -17,6 +17,8 @@
 | 🦴 **Скелет + частицы** | иерархия костей → `gpu3d-batch-mat`; пул 4096 частиц с LCG-детерминизмом |
 | 🧩 **ECS в ядре** | слоты+поколения (зомби-хендлы невозможны), bulk-запросы `ecs-each/col` |
 | 📦 **Ассеты** | именованный реестр с типами и рефкаунтами, явная сборка `asset-gc!` |
+| 🎬 **Пост-обработка** | bloom + экспозиция с плечом + виньетка + детерминированное зерно (~0.6 мс на 400×300) |
+| 🌤️ **Атмосфера** | небодом + солнце в bloom, дрейфующие облака, blob-тени, глиттер воды — всё из Lisp |
 | 🛠️ **Редактор + MCP** | гизмо в живой игре, hot reload, AI Ready (Model Context Protocol) |
 | 🌐 **Песочница** | весь движок в ~1 МБ WASM: редактор, REPL, звук — ноль сети после загрузки |
 
@@ -435,6 +437,23 @@ demo/          orbital.gif, survival.gif, filmstrip*.png, editor-*.png, *.log
    символов, pshufb-классификация.
 6. JIT для eval (ТЗ §10.1) — числовые ядра сделаны в этапе 3 (49×);
    расширение покрытия — следующий шаг.
+
+## Этапы 19–20 (v0.14): пост-обработка и атмосфера
+
+- **Пост-обработка** (`src/post.rs`): `gpu3d-post` — bloom (сбор ИЗБЫТКА над
+  порогом 0.86 → downsample ¼ → два box-blur → возврат ×3), экспозиция с
+  мягким плечом (identity до 0.85 — средние тона сцены не искажаются),
+  виньетка, зерно через хэш (пиксель, кадр) — детерминизм без rand.
+  ~0.6 мс на 400×300 (release). 6 тестов, включая побитовый детерминизм.
+- **Атмосфера** (Lisp над существующими нативами): небодом с sqrt-градиентом
+  и диффузом 0 на время неба, солнце-диск (bloom-ореол), дрейфующие
+  облака-билборды с процедурной текстурой (значения 0..255 — texel-альфа
+  сэмплер не берёт, силуэт решён радиальным спадом), blob-тени под телами
+  (масштаб от высоты), глиттер воды с предвычисленными базами (половина
+  вершин за кадр), шум травы. Цена: ~27% fps — задокументирована в
+  benchmark.md с A/B-протоколом.
+
+![До/после](docs/img/physpoly_still1.png)
 
 ## Этапы 15–18 (v0.13): JIT-покрытие, скелет, прокачанное ECS, ассеты
 

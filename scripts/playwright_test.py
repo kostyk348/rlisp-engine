@@ -13,9 +13,13 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errors.append(str(e)))
     pg.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     pg.goto(HTML)
-    pg.wait_for_timeout(3500)
-
-    status = pg.text_content("#status")
+    # сцена с атмосферой грузится несколько секунд — поллим статуса до 20 с
+    status = ""
+    for _ in range(40):
+        pg.wait_for_timeout(500)
+        status = pg.text_content("#status") or ""
+        if "fps" in status:
+            break
     print("статус:", status)
     assert status and "fps" in status, "статус не обновился — цикл не идёт"
 

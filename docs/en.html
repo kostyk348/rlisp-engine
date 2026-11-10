@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rlisp-engine — a game engine as a Lisp machine</title>
+<meta name="description" content="Lisp-first game engine: interpreter with tracing GC, JIT numeric kernels (up to 234×), impulse physics with honest rolling, software 3D pipeline, Unity-like editor, in-browser WASM sandbox. Zero dependencies.">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg2: #11151f;
+    --card: #161b28;
+    --line: #232a3a;
+    --text: #dbe2f0;
+    --muted: #8b93a7;
+    --accent: #ffb347;
+    --accent2: #7ee787;
+    --accent3: #79c0ff;
+    --danger: #ff7b72;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  a { color: var(--accent3); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11,14,20,.86);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .wrap { display: flex; align-items: center; gap: 22px; height: 58px; }
+  nav .logo { font-weight: 700; font-family: var(--mono); font-size: 15px; color: var(--text); }
+  nav .logo b { color: var(--accent); }
+  nav a.nav { color: var(--muted); font-size: 14px; }
+  nav a.nav:hover { color: var(--text); text-decoration: none; }
+  nav .cta {
+    margin-left: auto;
+    background: var(--accent); color: #14181f;
+    padding: 7px 16px; border-radius: 8px; font-weight: 600; font-size: 14px;
+  }
+  nav .cta:hover { text-decoration: none; filter: brightness(1.08); }
+
+  header.hero { padding: 72px 0 46px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+  .badges img { height: 20px; border-radius: 4px; }
+  h1 { font-size: 46px; line-height: 1.15; letter-spacing: -0.5px; }
+  h1 .grad {
+    background: linear-gradient(92deg, var(--accent), var(--accent2) 60%, var(--accent3));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { font-size: 19px; color: var(--muted); max-width: 760px; margin: 16px 0 8px; }
+  .sub b { color: var(--text); }
+  .hero-cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 8px; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 10px;
+    font-weight: 600; font-size: 15px;
+  }
+  .btn:hover { text-decoration: none; filter: brightness(1.1); }
+  .btn-main { background: var(--accent); color: #14181f; }
+  .btn-ghost { border: 1px solid var(--line); color: var(--text); background: var(--card); }
+  .hero-gif {
+    margin-top: 36px;
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .hero-gif img { width: 100%; display: block; }
+  .hero-gif .cap {
+    padding: 10px 16px; font-size: 13px; color: var(--muted);
+    background: var(--bg2); border-top: 1px solid var(--line);
+    font-family: var(--mono);
+  }
+
+  .numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 42px 0; }
+  .num {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 14px; text-align: center;
+  }
+  .num b { display: block; font-size: 30px; font-family: var(--mono); color: var(--accent); }
+  .num span { font-size: 13px; color: var(--muted); }
+
+  section { padding: 46px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 30px; margin-bottom: 8px; letter-spacing: -0.3px; }
+  h2 .tag {
+    font-size: 12px; vertical-align: middle; margin-left: 10px;
+    background: rgba(126,231,135,.12); color: var(--accent2);
+    padding: 3px 10px; border-radius: 20px; font-family: var(--mono); font-weight: 500;
+  }
+  .lead { color: var(--muted); max-width: 780px; margin-bottom: 26px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 22px;
+  }
+  .card:hover { border-color: #33405c; }
+  .card h3 { font-size: 17px; margin-bottom: 8px; }
+  .card h3 .ic { margin-right: 8px; }
+  .card p { font-size: 14.5px; color: var(--muted); }
+  .card p b { color: var(--text); }
+
+  .demos { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .demo { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .demo img { width: 100%; display: block; }
+  .demo .cap { padding: 12px 16px; font-size: 13.5px; color: var(--muted); background: var(--bg2); }
+  .demo .cap b { color: var(--text); display: block; margin-bottom: 2px; font-size: 14.5px; }
+
+  pre {
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px; overflow-x: auto; font-family: var(--mono); font-size: 13.5px;
+    line-height: 1.6; color: #c9d5e8;
+  }
+  pre .k { color: var(--accent); }
+  pre .f { color: var(--accent3); }
+  pre .c { color: #5b6b85; font-style: italic; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { padding: 10px 14px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; }
+  td b { color: var(--accent); }
+  .tbl-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  tr:last-child td { border-bottom: none; }
+
+  .honest { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--danger); border-radius: 12px; padding: 18px 22px; margin: 14px 0; }
+  .honest p { font-size: 14.5px; color: var(--muted); margin: 6px 0; }
+  .honest p b { color: var(--text); }
+
+  footer { padding: 34px 0 60px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; }
+  @media (max-width: 640px) { h1 { font-size: 32px; } .sub { font-size: 16px; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="logo">rlisp-<b>engine</b></span>
+    <a class="nav" href="#features">Features</a>
+    <a class="nav" href="#demos">Demos</a>
+    <a class="nav" href="#graphon">Graphics</a>
+    <a class="nav" href="#bench">Benchmarks</a>
+    <a class="nav" href="#honest">Honesty</a>
+    <a class="nav" href="index.html" style="font-family:var(--mono)"><b style="color:var(--accent)">EN</b> | RU</a>
+    <a class="cta" href="playground.html">Open the sandbox →</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="badges">
+      <img src="https://img.shields.io/badge/tests-104%20passing-7ee787" alt="tests">
+      <img src="https://img.shields.io/badge/dependencies-0-critical" alt="deps 0">
+      <img src="https://img.shields.io/badge/wasm-sandbox%20~1MB-79c0ff" alt="wasm">
+      <img src="https://img.shields.io/badge/license-MIT-8b93a7" alt="MIT">
+      <img src="https://img.shields.io/badge/CI-7%20jobs%20%2B%20release-ffb347" alt="CI">
+    </div>
+    <h1>A game engine<br>as a <span class="grad">Lisp machine</span></h1>
+    <p class="sub">
+      All gameplay code is Lisp. Rust is <b>only the HAL</b>: raster, audio, input, files.
+      An interpreter with tracing GC, <b>JIT numeric kernels up to 234×</b>, impulse physics
+      with honest rolling, a software 3D pipeline plus optional wgpu behind the same facade,
+      a Unity-like editor and a <b>browser sandbox with zero dependencies</b>.
+    </p>
+    <div class="hero-cta">
+      <a class="btn btn-main" href="playground.html">Play in the browser — no build step</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine/releases">Download v0.14.0</a>
+      <a class="btn btn-ghost" href="https://github.com/kostyk348/rlisp-engine">GitHub →</a>
+    </div>
+    <div class="hero-gif">
+      <img src="img/physpoly.gif" alt="Physics playground: NGS solver, wind in skeletal crowns, particles" loading="lazy">
+      <div class="cap">"PHYSICS PLAYGROUND" — NGS solver with honest rolling, wind in skeletal tree crowns, atmospheric sky with sun and clouds, bloom and grain. 400×300, software rasterizer.</div>
+    </div>
+
+    <div class="numbers">
+      <div class="num"><b>0</b><span>Cargo dependencies</span></div>
+      <div class="num"><b>234×</b><span>JIT mixed kernel</span></div>
+      <div class="num"><b>104</b><span>tests (+6 with JIT)</span></div>
+      <div class="num"><b>~1 MB</b><span>whole engine in WASM</span></div>
+      <div class="num"><b>28</b><span>bones in the scene</span></div>
+      <div class="num"><b>4096</b><span>particle pool</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2>What's inside</h2>
+    <p class="lead">Every layer is built from scratch, with no third-party crates. Everything claimed here is covered by tests and honestly documented — limitations included.</p>
+    <div class="cards">
+      <div class="card"><h3><span class="ic">⚙️</span>Lisp core</h3>
+        <p>Interpreter with cons pairs in a GC heap, <b>tracing GC with a background thread</b>, closures, macros, tables, a SIMD tokenizer (AVX-512/SSE2/scalar with runtime dispatch).</p></div>
+      <div class="card"><h3><span class="ic">🚀</span>JIT numeric kernels</h3>
+        <p>Copy-and-patch compilation of lambdas to x86-64 machine code: arithmetic, comparisons, if/cond/let/let*, min/max/abs/sqrt/floor. <b>Up to 234×</b> on a mixed kernel, bit-exact parity with the interpreter, transparent deoptimization.</p></div>
+      <div class="card"><h3><span class="ic">🎱</span>Physics with honest rolling</h3>
+        <p>NGS solver: accumulated impulses, Coulomb friction at the contact point with an angular coupling, restitution from central approach. <b>Sliding → rolling follows theory exactly</b>, no energy pumping on slopes, bitwise determinism.</p></div>
+      <div class="card"><h3><span class="ic">🦴</span>Skeleton + particles</h3>
+        <p>Bone hierarchy → world matrices → <b>gpu3d-batch-mat</b> (a 4×4 matrix per instance). A CPU pool of 4096 particles with LCG burst scatter — deterministic without rand.</p></div>
+      <div class="card"><h3><span class="ic">🧩</span>ECS in the core</h3>
+        <p>Slots + generations (zombie handles are impossible), O(1) access, bulk queries <b>ecs-each/ecs-col</b> in slot order. The Lisp-level ecs.lisp stays a DSL.</p></div>
+      <div class="card"><h3><span class="ic">📦</span>Asset manager</h3>
+        <p>A named registry with types and <b>refcounts</b>: put!/ref!/release!/gc!, type validation on retrieval, slot reuse after explicit collection.</p></div>
+      <div class="card"><h3><span class="ic">🎨</span>Rendering: software + wgpu</h3>
+        <p>A software pipeline: T&amp;L, z-buffer, vertex colors, tiled textures, fog, an alpha pass with painter's sort, instance batching. A <b>wgpu backend behind the same HAL facade</b> — Lisp never changes.</p></div>
+      <div class="card"><h3><span class="ic">🎬</span>Post-processing (stage 19)</h3>
+        <p><b>gpu3d-post</b>: bloom (excess over threshold → ¼ downsample → box blur), exposure with a soft shoulder (midtones untouched), vignette, deterministic grain (hashed, no rand). ~0.6 ms at 400×300.</p></div>
+      <div class="card"><h3><span class="ic">🌤️</span>Atmosphere (stage 20)</h3>
+        <p>A gradient sky dome, a sun disk with a bloom halo, <b>drifting clouds</b> (procedural texture, radial silhouette), blob shadows under bodies, <b>water glitter</b> — all from Lisp on top of the existing natives.</p></div>
+      <div class="card"><h3><span class="ic">🛠️</span>Unity-like editor</h3>
+        <p>Scene tree, gizmo manipulators, inspector, scene saving to a Lisp file, <b>hot reload</b> without a restart. AI Ready: an MCP server lets an agent drive the engine.</p></div>
+      <div class="card"><h3><span class="ic">🔊</span>Chiptune audio</h3>
+        <p>Zero-dep synthesis: oscillators, ADSR envelopes, music tracks — and <b>WebAudio in the sandbox</b> driven by physics events.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="demos">
+  <div class="wrap">
+    <h2>Demos <span class="tag">all gameplay code is Lisp</span></h2>
+    <p class="lead">Four scenes, from a terminal roguelike to a 3D island — all run headless, in a window and in the browser.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/survival.gif" alt="Survival" loading="lazy">
+        <div class="cap"><b>"Survival"</b>A 2D roguelike on the first Lisp layer: enemies, combat, items, sound. Terminal (ANSI) and window.</div></div>
+      <div class="demo"><img src="img/orbital.gif" alt="Orbital" loading="lazy">
+        <div class="cap"><b>"ORBITAL"</b>3D on the HAL raster: planets, stars, an orbital camera — a 3D DSL over the batch pipeline.</div></div>
+      <div class="demo"><img src="img/island.gif" alt="Island" loading="lazy">
+        <div class="cap"><b>"Island"</b>a heightfield, water, a skybox, stage-7 materials (specular, fog), textures.</div></div>
+      <div class="demo"><img src="img/physpoly_filmstrip.png" alt="Physics playground frames" loading="lazy">
+        <div class="cap"><b>"Physics Playground"</b>coconuts on NGS physics: rolling down slopes without energy pumping, water damping spin, splashes and ripples.</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="graphon">
+  <div class="wrap">
+    <h2>Graphics: before and after <span class="tag">stages 19–20</span></h2>
+    <p class="lead">The same scene, the same 400×300 software rasterizer — only post-processing and the atmosphere added. Left: v0.13, right: v0.14.</p>
+    <div class="demos">
+      <div class="demo"><img src="img/physpoly_before.png" alt="Before: v0.13" loading="lazy">
+        <div class="cap"><b>Before (v0.13)</b>a flat fill background, static water, no shadows — bodies "float" above the sand.</div></div>
+      <div class="demo"><img src="img/physpoly_still1.png" alt="After: v0.14" loading="lazy">
+        <div class="cap"><b>After (v0.14)</b>sky dome + sun in bloom, a cloudy horizon, blob shadows, water glitter, bloom/vignette/grain.</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="code">
+  <div class="wrap">
+    <h2>A glimpse of scene code</h2>
+    <p class="lead">Stage 12–20 natives: physics, particles, skeleton, ECS, assets, post — all from Lisp.</p>
+<pre><span class="c">;; wind bends a palm crown: skeleton (stage 16) → matrices → batch</span>
+(<span class="k">skel-rot!</span> *skel* crown 0.0 0.0
+           (+ (* 0.10 (<span class="f">sin</span> (+ (* *t* 1.1) phase)))
+              (* 0.06 (<span class="f">sin</span> (+ (* *t* 2.3) (* phase 1.7))))))
+(<span class="f">skel-batch!</span> *skel* *skel-batch* 0.24 0.52 0.22)
+(<span class="f">gpu3d-batch-mat</span> (car *frond-mesh*) (cadr *frond-mesh*) *skel-batch* mvp)
+
+<span class="c">;; a coconut hits the sand: physics event → particle burst (stage 14)</span>
+(<span class="k">if</span> (&gt; ey 0.15)
+    (<span class="f">part-burst!</span> *parts* 20 ex (+ ey 0.05) ez 0.0 2.6 0.0
+                 (* 2.2 (<span class="f">min</span> sp 9.0)) 0.55 0.8 0.11
+                 0.95 0.83 0.60)  <span class="c">; sand</span>
+    (<span class="f">part-burst!</span> *parts* 14 ex 0.08 ez 0.0 3.4 0.0
+                 (* 2.0 (<span class="f">min</span> sp 8.0)) 0.5 0.55 0.09
+                 0.82 0.93 1.0))  <span class="c">; water</span>
+
+<span class="c">;; ECS (stage 17), assets (stage 18), post (stage 19)</span>
+(<span class="f">ecs-set!</span> *ecs* h "hp" 100)
+(<span class="k">for-each</span> (<span class="k">lambda</span> (row) …) (<span class="f">ecs-each</span> *ecs* "hp"))
+(<span class="f">asset-ref!</span> *assets* "frond-mesh")
+(<span class="f">gpu3d-post</span> 1.06 0.55 0.32 0.035)</pre>
+  </div>
+</section>
+
+<section id="bench">
+  <div class="wrap">
+    <h2>Benchmarks <span class="tag">honest methodology</span></h2>
+    <p class="lead">We measure a specific path, not "everything at once". Full protocols with environment details are in docs/benchmark.md.</p>
+    <div class="tbl-card">
+      <table>
+        <tr><th>Path</th><th>What is measured</th><th>Result</th></tr>
+        <tr><td><b>JIT</b> numeric kernels</td><td>lambda call (arithmetic+if), 200k calls</td><td><b>49×</b> (2296 → 47 ns)</td></tr>
+        <tr><td><b>JIT</b> stage-15 coverage</td><td>mixed kernel: branching+clamp+floor, 100k</td><td><b>≈234×</b> (20059 → 86 ns)</td></tr>
+        <tr><td><b>SIMD</b> tokenizer</td><td>59 KB of real Lisp sources ×200</td><td>1.07× (≥3× criterion — <b>not met, honestly</b>)</td></tr>
+        <tr><td><b>Physics</b></td><td>"Physics Playground", 400×300, headless</td><td><b>~29 fps</b> with particles and skeleton</td></tr>
+        <tr><td><b>Post FX</b></td><td>bloom+shoulder+vignette+grain, 400×300</td><td><b>~0.6 ms</b>/frame (release)</td></tr>
+        <tr><td><b>WASM</b></td><td>sandbox in Chromium</td><td><b>22 fps</b> physics / 52 fps 2D</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="honest">
+  <div class="wrap">
+    <h2>Honest limitations</h2>
+    <p class="lead">A selling site that lies about "everything works" isn't a selling site. So here is what is NOT done — in the same font as the achievements.</p>
+    <div class="honest">
+      <p><b>Rolling resistance is not modeled</b> — a perfect sphere rolls forever: friction only damps slipping.</p>
+      <p><b>SIMD tokenizer: 1.07× instead of the 3× criterion</b> — analysis and a fix plan (symbol interning, pshufb) in docs/benchmark.md.</p>
+      <p><b>Per-vertex skinning is not done</b> — the skeleton animates instances (a matrix per bone), not mesh vertices.</p>
+      <p><b>Clouds are billboards with a procedural texture</b>, not volumetric: the texel alpha channel is ignored by the sampler (the pass blend is a constant), so the silhouette is a radial brightness falloff.</p>
+      <p><b>The atmosphere costs ~27% fps</b> (24 → 17.5): water glitter is a Lisp loop over 625 vertices; vectorizing it with native ALU ops is the next optimization candidate.</p>
+      <p><b>The wgpu backend</b> is offscreen + readback; there is no windowed swapchain.</p>
+      <p>The full list — <a href="https://github.com/kostyk348/rlisp-engine/blob/master/LIMITATIONS.md">LIMITATIONS.md</a>, updated every stage.</p>
+    </div>
+  </div>
+</section>
+
+<section id="try">
+  <div class="wrap">
+    <h2>Try it</h2>
+    <div class="cards">
+      <div class="card"><h3>In the browser</h3><p><a href="playground.html">The sandbox (playground.html)</a> — the whole engine in WASM: a Lisp editor, REPL, scene presets, sound. Opens as a file, zero network.</p></div>
+      <div class="card"><h3>Natively</h3><p><code style="font-family:var(--mono);font-size:13px">tar -xzf rlisp-engine-v*.tar.gz && ./rlisp-engine --script lisp/main_physpoly.lisp</code> — a binary + scenes + documentation.</p></div>
+      <div class="card"><h3>From source</h3><p><code style="font-family:var(--mono);font-size:13px">cargo run --release -- --script assets/lisp/main_physpoly.lisp --capture demo/frames --every 6 --frames 240 --fast</code> — build and shoot a demo.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>rlisp-engine — a game engine as a Lisp machine · MIT</span>
+    <span><a href="https://github.com/kostyk348/rlisp-engine">GitHub</a> · <a href="https://github.com/kostyk348/rlisp-engine/releases">Releases</a> · <a href="playground.html">Sandbox</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
