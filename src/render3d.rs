@@ -674,6 +674,7 @@ pub(crate) fn batch_draw_mat(
     batch_draw_impl(hal, pos, None, idx, insts, mvp, 0, true)
 }
 
+#[allow(clippy::too_many_arguments)] // формат батча — 8 параметров по дизайну HAL
 fn batch_draw_impl(
     hal: &mut Hal,
     pos: &[f32],

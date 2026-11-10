@@ -16,6 +16,9 @@
 (defpersistent *skel* 0)
 (defpersistent *palm-bones* '())
 (define *skel-batch* (make-f32vec 8192 0.0))
+;; ——— ассеты (этап 18) и ECS (этап 17) ———
+(defpersistent *assets* 0)
+(defpersistent *ecs* 0)
 
 ;; ——— рельеф: остров с пляжем и шумом ———
 (define *pa* 30.0)                 ; полуразмер
@@ -256,8 +259,16 @@
 (define *part-mesh* (sphere-mesh 4 6)) ; брызги: 24 трг/инстанс
 
 (define *cnut-n* 9)
+(define (seed-ecs!)
+  ;; каждый кокос — сущность ECS (этап 17): kind/hp
+  (dotimes (k *cnut-n*)
+    (let ((h (ecs-make! *ecs*)))
+      (ecs-set! *ecs* h "kind" "coco")
+      (ecs-set! *ecs* h "hp" (+ 60 (* 5 k))))))
 (define (spawn-cnuts!)
   (phys-clear! *phys*)
+  (ecs-clear! *ecs*)
+  (seed-ecs!)
   (define (go k)
     (if (>= k *cnut-n*)
         #f
@@ -437,7 +448,9 @@
                             "  TRIS " (number->string *tris-total*))
              6 13 1 (list 0.6 0.7 0.85))
   (draw-text (string-append "FPS " (number->string *fps-last-val*)
-                            "  PARTS " (number->string (part-n *parts*)))
+                            "  PARTS " (number->string (part-n *parts*))
+                            "  ECS " (number->string (car (ecs-stats *ecs*)))
+                            "  ASSETS " (number->string (car (asset-stats *assets*))))
              6 21 1 (list 0.7 0.9 0.6))
   (draw-text (string-append "A/D camera  R reset  BONES "
                             (number->string (skel-n *skel*)))
@@ -501,6 +514,21 @@
 (part-seed! *parts* 7311)
 (if (= 0 (skel-n *skel*))
     (build-palm-skel!)
+    #f)
+;; реестр ассетов (этап 18): меши сцены под рефкаунтами
+(define (register-assets!)
+  (asset-put! *assets* "cnut-mesh" "mesh" *cnut-mesh*)
+  (asset-ref! *assets* "cnut-mesh")
+  (asset-put! *assets* "frond-mesh" "mesh" *frond-mesh*)
+  (asset-ref! *assets* "frond-mesh")
+  (asset-put! *assets* "part-mesh" "mesh" *part-mesh*)
+  (asset-ref! *assets* "part-mesh")
+  (asset-put! *assets* "ring-mesh" "mesh" *ring-mesh*)
+  (asset-ref! *assets* "ring-mesh")
+  (set! *assets-n* 1))
+(define *assets-n* 0)
+(if (= 0 *assets-n*)
+    (register-assets!)
     #f)
 (spawn-cnuts!)
 (print "PHYS POLY: сферы+хайтфилд+вода на нативах phys-*; A/D камера, R сброс")
