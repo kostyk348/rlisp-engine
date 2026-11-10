@@ -322,9 +322,9 @@ pub fn register(env: crate::interp::Gc, store: Rc<RefCell<Vec<Particles>>>) {
     // (part-step! p dt gx gy gz drag)
     let st = store.clone();
     def(env, "part-step!", move |args| {
-        need(args, 7)?;
+        need(args, 6)?;
         let dt = f32_of(&args[1])?;
-        let mut vals = [0.0f32; 5];
+        let mut vals = [0.0f32; 4];
         for (i, a) in args[2..].iter().enumerate() {
             vals[i] = f32_of(a)?;
         }

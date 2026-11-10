@@ -8,6 +8,10 @@
 (defpersistent *fps-last-val* 0.0)
 (defpersistent *cam-a* 0.9)
 (defpersistent *ripples* '())
+;; ——— частицы (этап 14): брызги от ударов ———
+(defpersistent *parts* 0)
+(defpersistent *splash-n* 0)
+(define *parts-out* (make-f32vec 32768 0.0))
 
 ;; ——— рельеф: остров с пляжем и шумом ———
 (define *pa* 30.0)                 ; полуразмер
@@ -222,6 +226,7 @@
                                     (vi2 (+ i 1) j) (vi2 i (+ j 1)) (vi2 (+ i 1) (+ j 1)))))))
     (list (f32-from-list pos) (f32-from-list idx))))
 (define *cnut-mesh* (sphere-mesh 7 10))
+(define *part-mesh* (sphere-mesh 4 6)) ; брызги: 24 трг/инстанс
 
 (define *cnut-n* 9)
 (define (spawn-cnuts!)
@@ -281,14 +286,27 @@
     (go 0 0)))
 
 ;; ——— рябь от ударов: расширяющиеся кольца на воде ———
-(define (spawn-ripples!)
-  (define (go evs acc)
+(define (spawn-impacts!)
+  ;; событие (a b kind speed x y z); рябь — на воде, залп — песок/вода по высоте
+  (define (go evs rips)
     (if (null? evs)
-        acc
+        (set! *ripples* (append *ripples* rips))
         (let* ((ev (car evs))
-               (x (nth ev 3)) (z (nth ev 5)))
-          (go (cdr evs) (cons (list x z 0.0) acc)))))
-  (set! *ripples* (append *ripples* (go (phys-events! *phys*) '()))))
+               (sp (nth ev 3))
+               (ex (nth ev 4)) (ey (nth ev 5)) (ez (nth ev 6)))
+          (if (and (> sp 2.0) (< *splash-n* 6))
+              (begin
+                (set! *splash-n* (+ *splash-n* 1))
+                (if (> ey 0.15)
+                    (part-burst! *parts* 20 ex (+ ey 0.05) ez 0.0 2.6 0.0
+                                 (* 2.2 (min sp 9.0)) 0.55 0.8 0.11
+                                 0.95 0.83 0.60)
+                    (part-burst! *parts* 14 ex 0.08 ez 0.0 3.4 0.0
+                                 (* 2.0 (min sp 8.0)) 0.5 0.55 0.09
+                                 0.82 0.93 1.0))
+                (go (cdr evs) (cons (list ex ez 0.0) rips)))
+              (go (cdr evs) (cons (list ex ez 0.0) rips))))))
+  (go (phys-events! *phys*) '()))
 (define (update-ripples! dt)
   (define (go rs acc)
     (if (null? rs)
@@ -354,16 +372,43 @@
     (if (null? *ripples*)
         #f
         (draw-batch *ring-mesh* (ring-insts) mvp))
+    ;; брызги: нативные частицы (этап 14), размер и цвет гаснут с жизнью
+    (define (part-insts)
+      (define n (part-dump! *parts* *parts-out*))
+      (define (go k acc)
+        (if (>= k n)
+            acc
+            (let* ((i (* k 8))
+                   (px (f32ref *parts-out* i))
+                   (py (f32ref *parts-out* (+ i 1)))
+                   (pz (f32ref *parts-out* (+ i 2)))
+                   (sz (f32ref *parts-out* (+ i 3)))
+                   (cr (f32ref *parts-out* (+ i 4)))
+                   (cg (f32ref *parts-out* (+ i 5)))
+                   (cb (f32ref *parts-out* (+ i 6)))
+                   (lf (f32ref *parts-out* (+ i 7)))
+                   (sc (* sz (+ 0.45 (* 0.55 lf))))
+                   (fk (+ 0.55 (* 0.45 lf))))
+              (go (+ k 1)
+                  (append acc (list px py pz sc sc sc 0 0 0
+                                    (* cr fk) (* cg fk) (* cb fk)))))))
+      (go 0 '()))
+    (if (= 0 (part-n *parts*))
+        #f
+        (begin
+          (gpu3d-alpha-blend 0.85)
+          (draw-batch *part-mesh* (part-insts) mvp)))
     (gpu3d-alpha-blend 1.0)
     (gpu3d-flush-alpha)
     mvp))
 
 (define (draw-hud)
-  (draw-text "PHYS POLY  STAGE10" 6 5 1 (list 1 1 1))
+  (draw-text "PHYS POLY  STAGE12 NGS" 6 5 1 (list 1 1 1))
   (draw-text (string-append "BODIES " (number->string (phys-n *phys*))
                             "  TRIS " (number->string *tris-total*))
              6 13 1 (list 0.6 0.7 0.85))
-  (draw-text (string-append "FPS " (number->string *fps-last-val*))
+  (draw-text (string-append "FPS " (number->string *fps-last-val*)
+                            "  PARTS " (number->string (part-n *parts*)))
              6 21 1 (list 0.7 0.9 0.6))
   (draw-text "A/D camera  R reset" 6 29 1 (list 0.85 0.85 0.7)))
 
@@ -380,8 +425,10 @@
   (if (key-down? "d") (set! *cam-a* (- *cam-a* (* 1.5 dt))) #f)
   (if (key-pressed? "r") (spawn-cnuts!) #f)
   (phys-step! *phys* dt)
-  (spawn-ripples!)
+  (set! *splash-n* 0)
+  (spawn-impacts!)
   (update-ripples! dt)
+  (part-step! *parts* dt 0.0 -14.0 0.0 0.6)
   (if (= 0 (mod *frame* 4)) (update-water!) #f)
   (if (>= *frame* (+ *fps-last* 120.0))
       (begin
@@ -392,5 +439,7 @@
   #t)
 
 (define *fps-clock* (time-now))
+(set! *parts* (part-new))
+(part-seed! *parts* 7311)
 (spawn-cnuts!)
 (print "PHYS POLY: сферы+хайтфилд+вода на нативах phys-*; A/D камера, R сброс")
