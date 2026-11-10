@@ -7,6 +7,7 @@
 #![allow(clippy::manual_is_multiple_of)]
 
 mod audio;
+mod ecs;
 mod editor;
 mod gc;
 mod gpu;
@@ -18,6 +19,7 @@ mod json;
 mod mcp;
 #[cfg(test)]
 mod parse_diff;
+mod particles;
 mod physics;
 mod png;
 mod render3d;
@@ -199,6 +201,8 @@ pub fn register_all(env: Gc, ctx: &CoreCtx, halrc: &Rc<RefCell<Hal>>) {
     render3d::register_render3d(env, halrc);
     editor::register_editor(env);
     physics::register(env, Rc::new(RefCell::new(Vec::new())));
+    ecs::register(env, Rc::new(RefCell::new(Vec::new())));
+    particles::register(env, Rc::new(RefCell::new(Vec::new())));
 }
 
 pub fn make_context(halrc: Rc<RefCell<Hal>>, root: PathBuf) -> (CoreCtx, GlobalCell) {
