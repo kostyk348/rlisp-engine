@@ -8,9 +8,11 @@ pub const MAX_SUB_DT: f32 = 1.0 / 90.0;
 const MAX_SUBSTEPS: u32 = 6;
 const SLOP: f32 = 0.005; // допустимое проникновение (Baumgarte)
 const CORR: f32 = 0.8; // доля коррекции проникновения за подшаг
+const MAX_CORR: f32 = 0.05; // потолок выталкивания за подшаг (иначе «телепорт»
+                            // после глубокого закапывания даёт гигантские прыжки)
 const BOUNCE_THRESH: f32 = 0.4; // |vn| ниже — отскок гасится (покой)
 const VEL_MAX: f32 = 60.0; // страховка от разгона
-const ITER: usize = 4; // итерации последовательных импульсов
+const ITER: usize = 8; // NGS-итерации (накопительные импульсы: больше — точнее сходимость)
 const ANGV_MAX: f32 = 60.0; // страховка от раскрутки, рад/с
 const PAIR_COOLDOWN: f32 = 0.09; // повторный стук пары — не чаще
 
@@ -49,10 +51,13 @@ pub struct Sphere {
     pub ay: f32,
     pub az: f32,
     /// угловая скорость, рад/с (сфера изотропна — скалярная инерция на все оси);
-    /// контактная динамика спина — этап 12 (нужен NGS-солвер, см. LIMITATIONS)
+    /// контактная динамика спина — NGS-солвер (этап 12): трение в точке
+    /// контакта связывает скольжение и вращение (честное качение)
     pub wx: f32,
     pub wy: f32,
     pub wz: f32,
+    /// обратная moments инерции I = 2/5·m·r² → inv_I = 5/(2·m·r²)
+    pub inv_i: f32,
 }
 
 impl Sphere {
@@ -77,6 +82,7 @@ impl Sphere {
             wx: 0.0,
             wy: 0.0,
             wz: 0.0,
+            inv_i: 2.5 * (1.0 / m) / (r * r),
         }
     }
 }
@@ -124,6 +130,57 @@ impl HeightField {
 
 /// контакт-кортеж солвера
 type Contacts = Vec<(u32, i32, f32, f32, f32, f32, f32, f32, f32, f32)>;
+
+/// скорость точки тела: v + ω×r (r — от центра до точки)
+#[inline]
+fn point_vel(s: &Sphere, rx: f32, ry: f32, rz: f32) -> (f32, f32, f32) {
+    (
+        s.vx + s.wy * rz - s.wz * ry,
+        s.vy + s.wz * rx - s.wx * rz,
+        s.vz + s.wx * ry - s.wy * rx,
+    )
+}
+
+/// контакт NGS-солвера: геометрия, зафиксированная до итераций, + накопленные
+/// импульсы (зажим дельт идёт от накопленного — кулоновский лимит не нарушается)
+struct NgC {
+    i: u32,
+    /// -1 — ландшафт
+    j: i32,
+    nx: f32,
+    ny: f32,
+    nz: f32,
+    /// касательный базис (t1 — по до-солверному скольжению)
+    t1x: f32,
+    t1y: f32,
+    t1z: f32,
+    t2x: f32,
+    t2y: f32,
+    t2z: f32,
+    /// плечи от центра до ТОЧКИ контакта на сфере: для пары ±n·r (контакт на
+    /// линии центров); для heightfield −n·r (нормаль сферы проходит через
+    /// центр — вертикальная точка (x,hy,z) годится только для меры
+    /// проникновения, сила же в сфере всегда вдоль радиуса). У нормального
+    /// импульса плечо ∥ n → момента нет; трение берёт ω×r в истинной точке.
+    rax: f32,
+    ray: f32,
+    raz: f32,
+    rbx: f32,
+    rby: f32,
+    rbz: f32,
+    /// обратные эффективные массы: нормаль inv_mΣ (плечо ∥ n — углового
+    /// члена нет); касательные inv_mΣ + inv_I·|r×t|² = 3.5·inv_mΣ для сферы
+    k_n: f32,
+    k_t1: f32,
+    k_t2: f32,
+    /// цель по нормальной скорости: −e_eff·vn0, где vn0 — сближение ЦЕНТРОВ
+    /// (у пары совпадает со скоростью точки контакта: плечо ∥ n)
+    vn_target: f32,
+    mu: f32,
+    jn_acc: f32,
+    jt1_acc: f32,
+    jt2_acc: f32,
+}
 
 #[derive(Clone)]
 pub struct World {
@@ -255,91 +312,226 @@ impl World {
                 }
             }
         }
-        // 3) импульсы (4 итерации)
+        // 3) NGS-солвер (этап 12): последовательные импульсы с НАКОПЛЕНИЕМ.
+        //    Нормаль — чистое ограничение скорости (цель vn = −e·vn0, где vn0 —
+        //    до-солверная скорость): проникновение правит только позиционная
+        //    фаза (шаг 5) — velocity-bias, накачивавший энергию, отсутствует
+        //    (split impulse). Трение — в точке контакта (v + ω×r): дельта
+        //    зажата кулоновским лимитом |jt| ≤ μ·jn_нак, поэтому трение строго
+        //    диссипативно; спин связан со скольжением — шар переходит на
+        //    качение честно. Для сферы плечо r ∥ n: нормальный импульс спин
+        //    не меняет; k_t = inv_mΣ + inv_I·|r×t|² по обе стороны контакта.
+        let mut sol: Vec<NgC> = Vec::with_capacity(cn.len());
+        for c in &cn {
+            let (i, j, nx, ny, nz, .., vn0) = *c;
+            let a = &self.spheres[i as usize];
+            // плечи вдоль нормали (см. NgC): контакт сферы — всегда на линии
+            // «центр − r·n»; вертикальная точка (cx,cy,cz) — только мера
+            // проникновения и позиция события
+            let sgn = if j < 0 { -1.0 } else { 1.0 };
+            let (rax, ray, raz) = (sgn * nx * a.r, sgn * ny * a.r, sgn * nz * a.r);
+            let (mut rbx, mut rby, mut rbz) = (0.0f32, 0.0f32, 0.0f32);
+            let mut rel = point_vel(a, rax, ray, raz);
+            let (inv_sum, inv_i_b) = if j >= 0 {
+                let b = &self.spheres[j as usize];
+                rbx = -nx * b.r;
+                rby = -ny * b.r;
+                rbz = -nz * b.r;
+                let pb = point_vel(b, rbx, rby, rbz);
+                rel = (pb.0 - rel.0, pb.1 - rel.1, pb.2 - rel.2);
+                (a.inv_m + b.inv_m, b.inv_i)
+            } else {
+                (a.inv_m, 0.0)
+            };
+            // t1 — по до-солверному скольжению, иначе стабильный fallback ⊥ n
+            let vnn = rel.0 * nx + rel.1 * ny + rel.2 * nz;
+            let (tx, ty, tz) = (rel.0 - nx * vnn, rel.1 - ny * vnn, rel.2 - nz * vnn);
+            let tl = (tx * tx + ty * ty + tz * tz).sqrt();
+            let (t1x, t1y, t1z) = if tl > 1e-6 {
+                (tx / tl, ty / tl, tz / tl)
+            } else if nx.abs() < 0.7 {
+                let inv = (ny * ny + nz * nz).sqrt();
+                (0.0, -nz / inv, ny / inv)
+            } else {
+                let inv = (nz * nz + nx * nx).sqrt();
+                (-nz / inv, 0.0, nx / inv)
+            };
+            let (t2x, t2y, t2z) = (
+                ny * t1z - nz * t1y,
+                nz * t1x - nx * t1z,
+                nx * t1y - ny * t1x,
+            );
+            let sq = |ax: f32, ay: f32, az: f32| ax * ax + ay * ay + az * az;
+            let k_n = inv_sum;
+            let k_t1 = inv_sum
+                + a.inv_i
+                    * sq(
+                        ray * t1z - raz * t1y,
+                        raz * t1x - rax * t1z,
+                        rax * t1y - ray * t1x,
+                    )
+                + inv_i_b
+                    * sq(
+                        rby * t1z - rbz * t1y,
+                        rbz * t1x - rbx * t1z,
+                        rbx * t1y - rby * t1x,
+                    );
+            let k_t2 = inv_sum
+                + a.inv_i
+                    * sq(
+                        ray * t2z - raz * t2y,
+                        raz * t2x - rax * t2z,
+                        rax * t2y - ray * t2x,
+                    )
+                + inv_i_b
+                    * sq(
+                        rby * t2z - rbz * t2y,
+                        rbz * t2x - rbx * t2z,
+                        rbx * t2y - rby * t2x,
+                    );
+            let (e, mu) = if j < 0 {
+                (a.e, a.mu)
+            } else {
+                let b = &self.spheres[j as usize];
+                (a.e.max(b.e) * 0.5 + a.e.min(b.e) * 0.5, a.mu.max(b.mu))
+            };
+            let e_eff = if -vn0 < BOUNCE_THRESH { 0.0 } else { e };
+            sol.push(NgC {
+                i,
+                j,
+                nx,
+                ny,
+                nz,
+                t1x,
+                t1y,
+                t1z,
+                t2x,
+                t2y,
+                t2z,
+                rax,
+                ray,
+                raz,
+                rbx,
+                rby,
+                rbz,
+                k_n,
+                k_t1,
+                k_t2,
+                vn_target: -e_eff * vn0,
+                mu,
+                jn_acc: 0.0,
+                jt1_acc: 0.0,
+                jt2_acc: 0.0,
+            });
+        }
         for _ in 0..ITER {
-            for c in &cn {
-                let (i, j, nx, ny, nz, _, _, _, _, _) = *c;
-                let (va, vb) = match j {
-                    -1 => (i as usize, usize::MAX),
-                    _ => (i as usize, j as usize),
-                };
-                let (rvx, rvy, rvz, inv_sum) = if vb == usize::MAX {
-                    let a = &self.spheres[va];
-                    (a.vx, a.vy, a.vz, a.inv_m)
+            for s in sol.iter_mut() {
+                // скорость в точке контакта на текущей итерации
+                let a = &self.spheres[s.i as usize];
+                let pv = point_vel(a, s.rax, s.ray, s.raz);
+                let rel = if s.j < 0 {
+                    pv
                 } else {
-                    let a = &self.spheres[va];
-                    let b = &self.spheres[vb];
-                    (b.vx - a.vx, b.vy - a.vy, b.vz - a.vz, a.inv_m + b.inv_m)
+                    let b = &self.spheres[s.j as usize];
+                    let pb = point_vel(b, s.rbx, s.rby, s.rbz);
+                    (pb.0 - pv.0, pb.1 - pv.1, pb.2 - pv.2)
                 };
-                let vn = rvx * nx + rvy * ny + rvz * nz;
-                if vn >= 0.0 {
-                    continue;
-                }
-                let (e, mu) = match vb {
-                    usize::MAX => (self.spheres[va].e, self.spheres[va].mu),
-                    _ => {
-                        let a = &self.spheres[va];
-                        let b = &self.spheres[vb];
-                        (a.e.max(b.e) * 0.5 + a.e.min(b.e) * 0.5, a.mu.max(b.mu))
-                    }
-                };
-                let e_eff = if -vn < BOUNCE_THRESH { 0.0 } else { e };
-                let jn = -(1.0 + e_eff) * vn / inv_sum;
-                // нормальный импульс
-                match vb {
-                    usize::MAX => {
-                        let a = &mut self.spheres[va];
-                        a.vx += nx * jn * a.inv_m;
-                        a.vy += ny * jn * a.inv_m;
-                        a.vz += nz * jn * a.inv_m;
-                    }
-                    _ => {
-                        let (l, r) = self.spheres.split_at_mut(vb);
-                        let (a, b) = (&mut l[va], &mut r[0]);
-                        a.vx -= nx * jn * a.inv_m;
-                        a.vy -= ny * jn * a.inv_m;
-                        a.vz -= nz * jn * a.inv_m;
-                        b.vx += nx * jn * b.inv_m;
-                        b.vy += ny * jn * b.inv_m;
-                        b.vz += nz * jn * b.inv_m;
-                    }
-                }
-                // трение Кулона: касательный импульс ≤ mu·|jn|
-                let (rvx, rvy, rvz) = match vb {
-                    usize::MAX => {
-                        let a = &self.spheres[va];
-                        (a.vx, a.vy, a.vz)
-                    }
-                    _ => {
-                        let a = &self.spheres[va];
-                        let b = &self.spheres[vb];
-                        (b.vx - a.vx, b.vy - a.vy, b.vz - a.vz)
-                    }
-                };
-                let vnn = rvx * nx + rvy * ny + rvz * nz;
-                let tx = rvx - nx * vnn;
-                let ty = rvy - ny * vnn;
-                let tz = rvz - nz * vnn;
-                let tl = (tx * tx + ty * ty + tz * tz).sqrt();
-                if tl > 1e-6 {
-                    let jt = (tl / inv_sum).min(mu * jn);
-                    let (tx, ty, tz) = (tx / tl, ty / tl, tz / tl);
-                    match vb {
-                        usize::MAX => {
-                            let a = &mut self.spheres[va];
-                            a.vx -= tx * jt * a.inv_m;
-                            a.vy -= ty * jt * a.inv_m;
-                            a.vz -= tz * jt * a.inv_m;
+                // — нормаль: накопительный импульс, зажим ≥ 0 (без липкости)
+                let vn = rel.0 * s.nx + rel.1 * s.ny + rel.2 * s.nz;
+                let jn_new = (s.jn_acc + (s.vn_target - vn) / s.k_n).max(0.0);
+                let djn = jn_new - s.jn_acc;
+                if djn != 0.0 {
+                    s.jn_acc = jn_new;
+                    let (px, py, pz) = (s.nx * djn, s.ny * djn, s.nz * djn);
+                    match s.j {
+                        -1 => {
+                            let a = &mut self.spheres[s.i as usize];
+                            a.vx += px * a.inv_m;
+                            a.vy += py * a.inv_m;
+                            a.vz += pz * a.inv_m;
                         }
-                        _ => {
-                            let (l, r) = self.spheres.split_at_mut(vb);
-                            let (a, b) = (&mut l[va], &mut r[0]);
-                            a.vx += tx * jt * a.inv_m;
-                            a.vy += ty * jt * a.inv_m;
-                            a.vz += tz * jt * a.inv_m;
-                            b.vx -= tx * jt * b.inv_m;
-                            b.vy -= ty * jt * b.inv_m;
-                            b.vz -= tz * jt * b.inv_m;
+                        jb => {
+                            let (l, r) = self.spheres.split_at_mut(jb as usize);
+                            let (a, b) = (&mut l[s.i as usize], &mut r[0]);
+                            b.vx += px * b.inv_m;
+                            b.vy += py * b.inv_m;
+                            b.vz += pz * b.inv_m;
+                            a.vx -= px * a.inv_m;
+                            a.vy -= py * a.inv_m;
+                            a.vz -= pz * a.inv_m;
+                        }
+                    }
+                }
+                // нормальный импульс ⊥ касательным и без крутящего момента —
+                // vt1/vt2 не меняет: трение можно решать по тому же rel
+                let lim = s.mu * s.jn_acc;
+                if lim > 0.0 {
+                    let vt1 = rel.0 * s.t1x + rel.1 * s.t1y + rel.2 * s.t1z;
+                    let jt1_new = (s.jt1_acc - vt1 / s.k_t1).clamp(-lim, lim);
+                    let djt = jt1_new - s.jt1_acc;
+                    if djt != 0.0 {
+                        s.jt1_acc = jt1_new;
+                        let (px, py, pz) = (s.t1x * djt, s.t1y * djt, s.t1z * djt);
+                        match s.j {
+                            -1 => {
+                                let a = &mut self.spheres[s.i as usize];
+                                a.vx += px * a.inv_m;
+                                a.vy += py * a.inv_m;
+                                a.vz += pz * a.inv_m;
+                                a.wx += a.inv_i * (s.ray * pz - s.raz * py);
+                                a.wy += a.inv_i * (s.raz * px - s.rax * pz);
+                                a.wz += a.inv_i * (s.rax * py - s.ray * px);
+                            }
+                            jb => {
+                                let (l, r) = self.spheres.split_at_mut(jb as usize);
+                                let (a, b) = (&mut l[s.i as usize], &mut r[0]);
+                                b.vx += px * b.inv_m;
+                                b.vy += py * b.inv_m;
+                                b.vz += pz * b.inv_m;
+                                b.wx += b.inv_i * (s.rby * pz - s.rbz * py);
+                                b.wy += b.inv_i * (s.rbz * px - s.rbx * pz);
+                                b.wz += b.inv_i * (s.rbx * py - s.rby * px);
+                                a.vx -= px * a.inv_m;
+                                a.vy -= py * a.inv_m;
+                                a.vz -= pz * a.inv_m;
+                                a.wx -= a.inv_i * (s.ray * pz - s.raz * py);
+                                a.wy -= a.inv_i * (s.raz * px - s.rax * pz);
+                                a.wz -= a.inv_i * (s.rax * py - s.ray * px);
+                            }
+                        }
+                    }
+                    let vt2 = rel.0 * s.t2x + rel.1 * s.t2y + rel.2 * s.t2z;
+                    let jt2_new = (s.jt2_acc - vt2 / s.k_t2).clamp(-lim, lim);
+                    let djt = jt2_new - s.jt2_acc;
+                    if djt != 0.0 {
+                        s.jt2_acc = jt2_new;
+                        let (px, py, pz) = (s.t2x * djt, s.t2y * djt, s.t2z * djt);
+                        match s.j {
+                            -1 => {
+                                let a = &mut self.spheres[s.i as usize];
+                                a.vx += px * a.inv_m;
+                                a.vy += py * a.inv_m;
+                                a.vz += pz * a.inv_m;
+                                a.wx += a.inv_i * (s.ray * pz - s.raz * py);
+                                a.wy += a.inv_i * (s.raz * px - s.rax * pz);
+                                a.wz += a.inv_i * (s.rax * py - s.ray * px);
+                            }
+                            jb => {
+                                let (l, r) = self.spheres.split_at_mut(jb as usize);
+                                let (a, b) = (&mut l[s.i as usize], &mut r[0]);
+                                b.vx += px * b.inv_m;
+                                b.vy += py * b.inv_m;
+                                b.vz += pz * b.inv_m;
+                                b.wx += b.inv_i * (s.rby * pz - s.rbz * py);
+                                b.wy += b.inv_i * (s.rbz * px - s.rbx * pz);
+                                b.wz += b.inv_i * (s.rbx * py - s.rby * px);
+                                a.vx -= px * a.inv_m;
+                                a.vy -= py * a.inv_m;
+                                a.vz -= pz * a.inv_m;
+                                a.wx -= a.inv_i * (s.ray * pz - s.raz * py);
+                                a.wy -= a.inv_i * (s.raz * px - s.rax * pz);
+                                a.wz -= a.inv_i * (s.rax * py - s.ray * px);
+                            }
                         }
                     }
                 }
@@ -350,8 +542,8 @@ impl World {
             s.x += s.vx * h;
             s.y += s.vy * h;
             s.z += s.vz * h;
-            // угловая скорость: страховка + накопление поворота (полёт/вода;
-            // на земле крен ведёт трение качением — линейная модель этапа 10)
+            // угловая скорость: страховка + накопление поворота из ω; на земле
+            // ω ведёт трение качения (NGS, шаг 3) — крен согласован со скольжением
             let w2 = s.wx * s.wx + s.wy * s.wy + s.wz * s.wz;
             if w2 > ANGV_MAX * ANGV_MAX {
                 let k = ANGV_MAX / w2.sqrt();
@@ -399,7 +591,7 @@ impl World {
             if pen <= SLOP {
                 continue;
             }
-            let push = (pen - SLOP) * CORR;
+            let push = ((pen - SLOP) * CORR).min(MAX_CORR);
             match j {
                 -1 => {
                     let s = &mut self.spheres[c.0 as usize];
@@ -1014,5 +1206,156 @@ mod tests {
         w.step(1.0 / 60.0);
         let s = &w.spheres[0];
         assert!(s.wx.abs() <= ANGV_MAX + 1.0, "ω не зажата: {}", s.wx);
+    }
+
+    // ——— этап 12: NGS-солвер, честное качение ———
+
+    fn slope_30() -> HeightField {
+        let mut hf = HeightField {
+            x0: -10.0,
+            z0: -10.0,
+            dx: 1.0,
+            dz: 1.0,
+            nx: 21,
+            nz: 21,
+            h: vec![0.0; 21 * 21],
+        };
+        // наклон 30°: высота убывает вдоль +x (tan 0.5774)
+        for r in 0..21 {
+            for c in 0..21 {
+                let x = hf.x0 + c as f32 * hf.dx;
+                hf.h[r * 21 + c] = -0.5774 * x;
+            }
+        }
+        hf
+    }
+
+    #[test]
+    fn spin_converts_to_rolling() {
+        // шар крутится (wz=−20), стоит на земле: трение в точке контакта
+        // переводит спин в качение без проскальзывания (vx = −wz·r)
+        let mut w = World::new();
+        w.hf = Some(flat_hf());
+        let r = 0.5f32;
+        w.add(Sphere::new(0.0, r, 0.0, r, 0.0, 0.5));
+        w.spheres[0].wz = -20.0;
+        let m = 4.1887902 * r * r * r;
+        let e0 = 0.2 * m * r * r * 400.0; // ½·I·ω² = 0.2·m·r²·ω²
+        sim(&mut w, 2.5, 1.0 / 60.0);
+        let s = &w.spheres[0];
+        let slip = s.vx + s.wz * s.r;
+        assert!(slip.abs() < 0.1, "качение не установилось: slip {}", slip);
+        assert!(
+            (2.6..3.1).contains(&s.vx),
+            "vx после перекачки: {} (теория ≈2.86)",
+            s.vx
+        );
+        let ef = 0.5 * m * (s.vx * s.vx + s.vy * s.vy + s.vz * s.vz)
+            + 0.2 * m * s.r * s.r * (s.wx * s.wx + s.wy * s.wy + s.wz * s.wz);
+        assert!(ef <= e0 + 1e-3, "энергия выросла: {} > {}", ef, e0);
+    }
+
+    #[test]
+    fn slope_no_energy_pump() {
+        // прошлый провал: на склоне Baumgarte-импульсы НАКАЧИВАЛИ энергию.
+        // NGS: полная энергия (линейная + вращательная + потенциальная)
+        // не превышает начальную — ни на одном кадре.
+        let mut w = World::new();
+        w.hf = Some(slope_30());
+        let mut s = Sphere::new(0.0, 1.0, 0.0, 0.4, 0.05, 0.6);
+        s.y = 0.5774 * 0.0 + 1.0;
+        w.add(s);
+        let m = 4.1887902 * 0.4 * 0.4 * 0.4;
+        let e0 = 19.6 * m * 1.0;
+        let mut rolled = false;
+        for _ in 0..180 {
+            w.step(1.0 / 60.0);
+            let s = &w.spheres[0];
+            let e = 0.5 * m * (s.vx * s.vx + s.vy * s.vy + s.vz * s.vz)
+                + 0.2 * m * s.r * s.r * (s.wx * s.wx + s.wy * s.wy + s.wz * s.wz)
+                + 19.6 * m * s.y;
+            assert!(e <= e0 + 0.4, "накачка энергии: {} > {}", e, e0);
+            if s.x > 1.5 {
+                rolled = true;
+            }
+        }
+        assert!(rolled, "шар должен скатиться по склону");
+    }
+
+    #[test]
+    fn rolling_not_faster_than_free_slide() {
+        // катящийся шар не может разогнаться быстрее скользящего без трения:
+        // vx_своб = g·sinθ·cosθ·t = 19.6·0.5·0.866·1.2 ≈ 10.2
+        let mut w = World::new();
+        w.hf = Some(slope_30());
+        let mut s = Sphere::new(0.0, 1.0, 0.0, 0.4, 0.05, 0.6);
+        s.y = 1.0;
+        w.add(s);
+        sim(&mut w, 1.2, 1.0 / 60.0);
+        let s = &w.spheres[0];
+        assert!(s.vx > 1.5, "скатывается медленно: {}", s.vx);
+        assert!(s.vx < 10.0, "быстрее свободного скольжения: {}", s.vx);
+    }
+
+    #[test]
+    fn sliding_transitions_to_rolling() {
+        // скользящий шар: кулоновское трение (μ·g ≈ 7.8 м/с²) гасит
+        // проскальзывание и переводит шар на качение; дальше идеальная сфера
+        // катится без сопротивления (rolling resistance не моделируется —
+        // см. LIMITATIONS), поэтому vx НЕ ноль, а slip = 0
+        let mut w = World::new();
+        w.hf = Some(flat_hf());
+        let mut s = Sphere::new(0.0, 0.5, 0.0, 0.5, 0.0, 0.4);
+        s.vx = 6.0;
+        w.add(s);
+        sim(&mut w, 3.0, 1.0 / 60.0);
+        let s = &w.spheres[0];
+        let slip = s.vx + s.wz * s.r;
+        assert!(slip.abs() < 0.1, "качение не установилось: slip {}", slip);
+        // теория: перекачка спина съедает 1/1.4 скорости → vx ≈ 6/1.4 ≈ 4.3
+        assert!(
+            (3.9..4.7).contains(&s.vx),
+            "vx после перекачки: {} (теория ≈4.3)",
+            s.vx
+        );
+    }
+
+    #[test]
+    fn bitwise_deterministic_rolling() {
+        let mk = || {
+            let mut w = World::new();
+            let mut hf = slope_30();
+            for i in 0..hf.h.len() {
+                let z = hf.z0 + (i / 21) as f32;
+                hf.h[i] += 0.15 * (z * 0.9).sin();
+            }
+            w.hf = Some(hf);
+            for k in 0..6u32 {
+                let mut s = Sphere::new(
+                    -1.0 + k as f32 * 0.9,
+                    1.0 + k as f32 * 0.6,
+                    (k as f32) * 0.5 - 1.2,
+                    0.3 + 0.04 * k as f32,
+                    0.1,
+                    0.55,
+                );
+                s.wz = 8.0 - 3.0 * k as f32;
+                s.vx = 0.4;
+                w.add(s);
+            }
+            w
+        };
+        let (mut a, mut b) = (mk(), mk());
+        for _ in 0..240 {
+            a.step(1.0 / 60.0);
+            b.step(1.0 / 60.0);
+        }
+        for (pa, pb) in a.spheres.iter().zip(b.spheres.iter()) {
+            assert_eq!(pa.x.to_bits(), pb.x.to_bits());
+            assert_eq!(pa.y.to_bits(), pb.y.to_bits());
+            assert_eq!(pa.z.to_bits(), pb.z.to_bits());
+            assert_eq!(pa.wx.to_bits(), pb.wx.to_bits());
+            assert_eq!(pa.wz.to_bits(), pb.wz.to_bits());
+        }
     }
 }
