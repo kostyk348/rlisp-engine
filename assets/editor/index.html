@@ -158,6 +158,7 @@
                 background:#1a1e26; color:var(--fg); cursor:pointer; font-size:11px; }
   .det button:hover { border-color:var(--acc); color:var(--acc); }
   .det-st { margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--dim); }
+  .det-info { padding:2px 10px 6px; font-family:var(--mono); font-size:11px; color:var(--dim); }
   .det-st.ok { color:#5cd08a; }
   .det-st.bad { color:#e06c75; }
 
@@ -285,7 +286,13 @@
         <button id="b-save" title="Ctrl+S — сохранить, движок подхватит на лету">Сохранить</button>
       </div>
       <textarea id="code" spellcheck="false"></textarea>
-      <div class="panel-title">Ассеты</div>
+      <div class="panel-title">
+        Ассеты
+        <span class="hint" style="margin-left:auto">
+          <button id="b-file-new" title="новый .lisp в assets/lisp">＋ файл</button>
+          <button id="b-file-del" title="удалить открытый файл">🗑</button>
+        </span>
+      </div>
       <div id="assets"></div>
     </div>
     <div class="tabpage" id="p-console">
@@ -298,6 +305,7 @@
         <button id="b-det-cmd" title="команда воспроизведения для терминала">⧉ Воспроизвести</button>
         <span id="det-st" class="det-st">—</span>
       </div>
+      <div class="det-info" id="det-file">файл прогона: —</div>
       <div id="log"></div>
       <div id="repl">
         <span class="pr">›</span>
@@ -1696,6 +1704,39 @@ logLine("редактор подключён. Всё живое: правь ко
   $id("b-det-stop").onclick = async () => {
     await evalLisp("(replay-stop!)");
     logLine("детерминизм: остановлено, файл сохранён", "sys");
+    inspectRun();
+  };
+
+  // Разбор файла прогона: сколько кадров, с какого старта, какая цепочка.
+  async function inspectRun() {
+    const r = await api("/api/replay-inspect", {path: path()});
+    const el = $id("det-file");
+    if (!r || !r.ok) {
+      el.textContent = "файл прогона: " + ((r && r.error) || "нет");
+      return;
+    }
+    el.textContent = "прогон: " + r.frames + " кадров · start " + r.start +
+      " · seed " + r.seed + " · chain " + r.chain;
+  }
+  $id("det-path").addEventListener("change", inspectRun);
+  inspectRun();
+
+  // —— файлы: создать / удалить (только assets/lisp, проверка на сервере)
+  $id("b-file-new").onclick = async () => {
+    const name = prompt("имя нового файла (в assets/lisp):", "new_scene.lisp");
+    if (!name) return;
+    const r = await api("/api/file-new", {path: name.trim()});
+    if (r && r.ok) { logLine("создан " + name, "sys"); openFile(name.trim()); }
+    else logLine("не создан: " + ((r && (r.error || r.message)) || "?"), "bad");
+  };
+  $id("b-file-del").onclick = async () => {
+    const cur = ($id("codefile").textContent || "").trim();
+    const m = cur.match(/[\w./-]+\.lisp/);
+    if (!m) { logLine("файл не открыт", "bad"); return; }
+    if (!confirm("удалить " + m[0] + "?")) return;
+    const r = await api("/api/file-delete", {path: m[0]});
+    if (r && r.ok) logLine("удалён " + m[0], "sys");
+    else logLine("не удалён: " + ((r && (r.error || r.message)) || "?"), "bad");
   };
   $id("b-det-cmd").onclick = () => {
     const cmd = "cargo run --release -- --script " +

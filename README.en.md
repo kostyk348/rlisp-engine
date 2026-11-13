@@ -10,7 +10,7 @@
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
-![Tests](https://img.shields.io/badge/tests-143%20passing-7ee787)
+![Tests](https://img.shields.io/badge/tests-151%20passing-7ee787)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-critical)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -61,7 +61,7 @@ Numbers from real runs (`docs/benchmark.md` has the environment and method):
 | 320×240 2D frame, software raster | **0.38 ms** pure HAL / **0.65 ms** through Lisp | `--bench`: 120 rects + 12 blits + 4 textures |
 | A whole game in Lisp | **714 lines** (RUINER), **745** (OASIS) | `assets/lisp/` |
 
-Quality is held by tests, not by promises: **143/143** (`cargo test --workspace`), clippy with
+Quality is held by tests, not by promises: **151/151** (`cargo test --workspace`), clippy with
 `-D warnings`, `cargo fmt --check`, plus a home-grown linter that keeps `src/` files under
 800 lines (see [AI_AGENTS.md](AI_AGENTS.md)).
 

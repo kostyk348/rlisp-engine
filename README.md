@@ -10,7 +10,7 @@
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
-![Tests](https://img.shields.io/badge/tests-143%20passing-7ee787)
+![Tests](https://img.shields.io/badge/tests-151%20passing-7ee787)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-critical)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -61,7 +61,7 @@ PNG, HTTP. Всё остальное — **8 695 строк Lisp**: `update`/`dr
 | 2D-кадр 320×240, программный растр | **0.38 мс** HAL / **0.65 мс** через Lisp | `--bench`: 120 прямоугольников + 12 блитов + 4 текстуры |
 | Игра целиком на Lisp | **714 строк** («РУИНЕР»), **745** («ОАЗИС») | `assets/lisp/` |
 
-Качество держится тестами, а не обещаниями: **143/143** (`cargo test --workspace`),
+Качество держится тестами, а не обещаниями: **151/151** (`cargo test --workspace`),
 clippy с `-D warnings`, `cargo fmt --check`, плюс собственный линтер, который не даёт
 файлам в `src/` разрастаться (лимит 800 строк — см. [AI_AGENTS.md](AI_AGENTS.md)).
 
