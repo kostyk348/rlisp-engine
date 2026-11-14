@@ -211,6 +211,19 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
         Value::Str(root.to_string_lossy().into_owned()),
     );
 
+    // ——— детерминизм: --replay грузит запись и фиксирует seed ———
+    // Seed обязан быть выставлен ДО загрузки сцены: иначе случайность,
+    // потраченная в init сцены (первая цель, первый враг), не воспроизводится —
+    // состояние ГПСЧ сбрасывалось уже после того, как init сдвинул его вперёд.
+    if let Some(p) = &args.replay {
+        let seed = crate::replay::start_replay(p)?;
+        crate::interp::rng::set_seed(seed);
+        println!(
+            "replay: {} (seed {}) — кадры сверяются по hash-цепочке",
+            p, seed
+        );
+    }
+
     load_file(&script, &ctx)?;
     let (w, h) = {
         let hb = halrc.borrow();
@@ -262,15 +275,7 @@ pub fn run_engine(args: &Args) -> Result<(), String> {
         None => vec![],
     };
 
-    // ——— детерминизм: --replay грузит запись и фиксирует seed, --record пишет свою ———
-    if let Some(p) = &args.replay {
-        let seed = crate::replay::start_replay(p)?;
-        crate::interp::rng::set_seed(seed);
-        println!(
-            "replay: {} (seed {}) — кадры сверяются по hash-цепочке",
-            p, seed
-        );
-    }
+    // ——— детерминизм: --record пишет свою запись ———
     if let Some(p) = &args.record {
         let seed = crate::interp::rng::initial_seed();
         crate::replay::start_record(p.clone(), seed, args.fps);

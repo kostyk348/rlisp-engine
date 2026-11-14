@@ -1,5 +1,7 @@
 pub mod builtins;
 pub mod builtins_io;
+pub mod builtins_misc;
+pub mod builtins_nav;
 pub mod builtins_replay;
 pub mod builtins_vec;
 pub mod env;

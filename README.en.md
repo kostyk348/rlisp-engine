@@ -118,10 +118,11 @@ attachable to a bug report.
 | **Lighting & post** | directional light + point lights, blob shadows, bloom with an exposure shoulder, vignette, grain |
 | **Physics** | impulse solver, NGS rolling friction, spheres/polygons/heightfield, buoyancy, angular dynamics |
 | **ECS** | slots + generations (zombie handles are impossible), bulk iteration `ecs-each` / `ecs-col` |
+| **Navigation** | grid A* in the core (`nav-path`): 4-connected, deterministic, no corner cutting |
 | **2D rendering** | from-scratch PNG decoder, procedural textures in Lisp, alpha test/blend, billboard sprites |
 | **Audio** | mixing, synthesis (saw/noise/sine), 3D attenuation, SFX synth inside the editor |
 | **Assets** | named registry with types and refcounts, explicit `asset-gc!` |
-| **Scripting** | 224 natives; everything else is Lisp libraries with hot reload |
+| **Scripting** | 168 natives; everything else is Lisp libraries with hot reload |
 | **Build** | native binary + WASM (`scripts/export_game.py` — a self-contained single-page HTML) |
 | **AI** | MCP server (`--mcp`, JSON-RPC 2.0 stdio): scene, spawning, properties, simulation step, frames |
 

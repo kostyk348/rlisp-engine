@@ -21,6 +21,7 @@ pub mod interp;
 pub mod jit;
 mod json;
 pub mod mcp;
+mod nav;
 #[cfg(test)]
 mod parse_diff;
 mod particles;

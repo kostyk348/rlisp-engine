@@ -354,3 +354,118 @@ fn hash_int_детерминизм_диапазон_и_лавина() {
     // нецелый аргумент — честная ошибка
     assert!(ev_res(&cell, "(hash-int 1.5)").is_err());
 }
+
+// —— Этап 32: навигация и «игровые» нативы ————————————————————————
+
+#[test]
+fn навигация_доступна_из_лиспа() {
+    let (_c, cell) = ctx();
+    // путь по пустой сетке 5x5 из (0,0) в (2,0) — три клетки
+    assert_eq!(
+        ev_res(&cell, "(define g (nav-new 5 5)) (nav-path g 0 0 2 0)").unwrap(),
+        "(0 0 1 0 2 0)"
+    );
+    // стена на (1,0) заставляет обойти: путь длиннее трёх клеток
+    let p = ev_res(&cell, "(nav-block! g 1 0 #t) (length (nav-path g 0 0 2 0))").unwrap();
+    assert_eq!(
+        p, "10",
+        "обход: (0,0),(0,1),(1,1),(2,1),(2,0) = 5 клеток = 10 чисел"
+    );
+    // недостижимая цель — #f, а не ошибка
+    assert_eq!(
+        ev_res(
+            &cell,
+            "(define h (nav-new 3 1)) (nav-block! h 1 0 #t) (nav-path h 0 0 2 0)"
+        )
+        .unwrap(),
+        "#f"
+    );
+    // stats: ширина, высота, число стен, счётчик поисков
+    assert_eq!(
+        ev_res(&cell, "(table-get (nav-stats g) 'searches 0)").unwrap(),
+        "2"
+    );
+    assert_eq!(
+        ev_res(&cell, "(table-get (nav-stats h) 'blocked 0)").unwrap(),
+        "1"
+    );
+    // вне сетки — честная ошибка, а не молчаливый no-op
+    assert!(ev_res(&cell, "(nav-block! g 9 9 #t)").is_err());
+    assert!(ev_res(&cell, "(nav-free? 999 0 0)").is_err());
+}
+
+#[test]
+fn сортировка_устойчива_и_с_компаратором() {
+    let (_c, cell) = ctx();
+    assert_eq!(ev_res(&cell, "(sort (list 3 1 2))").unwrap(), "(1 2 3)");
+    assert_eq!(
+        ev_res(&cell, "(sort (list 3 1 2) (lambda (a b) (> a b)))").unwrap(),
+        "(3 2 1)"
+    );
+    // строки — по естественному порядку
+    assert_eq!(
+        ev_res(&cell, "(sort (list \"b\" \"a\" \"c\"))").unwrap(),
+        "(a b c)"
+    );
+    // смешанные числа: int и float сравнимы между собой
+    assert_eq!(ev_res(&cell, "(sort (list 2.5 1 3))").unwrap(), "(1 2.5 3)");
+    // пустой список и список из одного элемента — без падений
+    assert_eq!(ev_res(&cell, "(sort (list))").unwrap(), "()");
+    assert_eq!(ev_res(&cell, "(sort (list 7))").unwrap(), "(7)");
+}
+
+#[test]
+fn интерполяция_и_ступеньки() {
+    let (_c, cell) = ctx();
+    assert_eq!(ev_res(&cell, "(lerp 0.0 10.0 0.25)").unwrap(), "2.5");
+    assert_eq!(ev_res(&cell, "(sign -3)").unwrap(), "-1.0");
+    assert_eq!(ev_res(&cell, "(sign 0)").unwrap(), "0.0");
+    assert_eq!(ev_res(&cell, "(approach 0.0 10.0 3.0)").unwrap(), "3.0");
+    // не перескакивает цель
+    assert_eq!(ev_res(&cell, "(approach 8.0 10.0 3.0)").unwrap(), "10.0");
+    // симметрия smoothstep и зажатие
+    assert_eq!(ev_res(&cell, "(smoothstep 0.0 1.0 0.0)").unwrap(), "0.0");
+    assert_eq!(ev_res(&cell, "(smoothstep 0.0 1.0 1.0)").unwrap(), "1.0");
+    assert_eq!(ev_res(&cell, "(smoothstep 0.0 1.0 0.5)").unwrap(), "0.5");
+    assert_eq!(ev_res(&cell, "(smoothstep 0.0 1.0 2.0)").unwrap(), "1.0");
+}
+
+#[test]
+fn строки_split_join_substring_find() {
+    let (_c, cell) = ctx();
+    assert_eq!(
+        ev_res(&cell, "(string-split \"a,b,c\" \",\")").unwrap(),
+        "(a b c)"
+    );
+    assert_eq!(
+        ev_res(&cell, "(string-join (list \"a\" \"b\") \"-\")").unwrap(),
+        "a-b"
+    );
+    // пустой разделитель — посимвольно
+    assert_eq!(
+        ev_res(&cell, "(string-split \"abc\" \"\")").unwrap(),
+        "(a b c)"
+    );
+    // substring считает символы, а не байты: кириллица не рвётся
+    assert_eq!(
+        ev_res(&cell, "(string-substring \"привет\" 1 3)").unwrap(),
+        "ри"
+    );
+    assert_eq!(ev_res(&cell, "(string-substring \"abc\" 1)").unwrap(), "bc");
+    // выход за границы зажимается, а не паникует
+    assert_eq!(
+        ev_res(&cell, "(string-substring \"abc\" 0 99)").unwrap(),
+        "abc"
+    );
+    assert_eq!(
+        ev_res(&cell, "(string-find \"привет\" \"вет\")").unwrap(),
+        "3"
+    );
+    assert_eq!(ev_res(&cell, "(string-find \"abc\" \"zz\")").unwrap(), "-1");
+    assert_eq!(ev_res(&cell, "(string-upcase \"abв\")").unwrap(), "ABВ");
+    assert_eq!(
+        ev_res(&cell, "(string-replace \"a-b-c\" \"-\" \"+\")").unwrap(),
+        "a+b+c"
+    );
+    assert_eq!(ev_res(&cell, "(string-trim \"  x  \")").unwrap(), "x");
+}

@@ -10,7 +10,7 @@
 
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
-![Tests](https://img.shields.io/badge/tests-151%20passing-7ee787)
+![Tests](https://img.shields.io/badge/tests-165%20passing-7ee787)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-critical)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -61,7 +61,7 @@ PNG, HTTP. Всё остальное — **8 695 строк Lisp**: `update`/`dr
 | 2D-кадр 320×240, программный растр | **0.38 мс** HAL / **0.65 мс** через Lisp | `--bench`: 120 прямоугольников + 12 блитов + 4 текстуры |
 | Игра целиком на Lisp | **714 строк** («РУИНЕР»), **745** («ОАЗИС») | `assets/lisp/` |
 
-Качество держится тестами, а не обещаниями: **151/151** (`cargo test --workspace`),
+Качество держится тестами, а не обещаниями: **165/165** (`cargo test --workspace`),
 clippy с `-D warnings`, `cargo fmt --check`, плюс собственный линтер, который не даёт
 файлам в `src/` разрастаться (лимит 800 строк — см. [AI_AGENTS.md](AI_AGENTS.md)).
 
@@ -118,10 +118,11 @@ cargo run --release -- --script assets/lisp/replay_demo.lisp \
 | **Освещение и пост** | направленный свет + точечные источники, blob-тени, bloom с плечом экспозиции, виньетка, зерно |
 | **Физика** | импульсный солвер, NGS-трение качения, сферы/полигоны/heightfield, плавучесть, угловая динамика |
 | **ECS** | слоты + поколения (зомби-хендлы невозможны), bulk-обход `ecs-each` / `ecs-col` |
+| **Навигация** | A* по сетке в ядре (`nav-path`): 4-связная, детерминированная, обход стен без срезания углов |
 | **Рендер 2D** | PNG-декодер с нуля, процедурные текстуры на Lisp, alpha-test/blend, спрайты-билборды |
 | **Звук** | сведение, синтез (saw/noise/sine), 3D-затухание, SFX-синтезатор в редакторе |
 | **Ассеты** | именованный реестр с типами и рефкаунтами, явная сборка `asset-gc!` |
-| **Скрипты** | 224 натива; всё остальное — Lisp-библиотеки, hot reload |
+| **Скрипты** | 168 нативов (было 146 до этапа 32); всё остальное — Lisp-библиотеки, hot reload |
 | **Сборка** | нативный бинарь + WASM (`scripts/export_game.py` — автономный одностраничный HTML) |
 | **AI** | MCP-сервер (`--mcp`, JSON-RPC 2.0 stdio): сцена, спавн, свойства, шаг симуляции, кадры |
 

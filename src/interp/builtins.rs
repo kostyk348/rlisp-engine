@@ -52,6 +52,10 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         env_define(env, name, Value::Native(Rc::new(f), name.to_string()));
     }
 
+    // — навигация (A*) и «игровые» нативы: сортировка, интерполяция, строки —
+    crate::interp::builtins_nav::register_nav_builtins(env);
+    crate::interp::builtins_misc::register_misc_builtins(env);
+
     // — списки и пары (Этап 2: cons строит GC-пару; Vec-списки сосуществуют) —
     def(env, "cons", |args| {
         need(args, 2)?;

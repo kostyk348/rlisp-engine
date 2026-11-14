@@ -15,17 +15,27 @@ static RND_STATE: AtomicU64 = AtomicU64::new(0);
 /// состояние ГПСЧ (иначе запись, начатая с середины, не воспроизводится).
 static INITIAL_SEED: AtomicU64 = AtomicU64::new(0);
 
+/// Чистый шаг ГПСЧ: состояние → следующее состояние. Никакого глобального
+/// состояния, поэтому шаг проверяется тестом без гонок между потоками.
+pub fn lcg_step(x: u64) -> u64 {
+    x.wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+}
+
+/// Состояние → число в [0,1) с 53 битами мантиссы.
+pub fn to_unit(x: u64) -> f64 {
+    (x >> 11) as f64 / (1u64 << 53) as f64
+}
+
 /// Линейный конгруэнтный шаг (как было с v0.1). Значение в [0,1).
 pub fn next_random() -> f64 {
     let mut x = RND_STATE.load(Ordering::Relaxed);
     if x == 0 {
         x = time_seed();
     }
-    x = x
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407);
+    x = lcg_step(x);
     RND_STATE.store(x, Ordering::Relaxed);
-    (x >> 11) as f64 / (1u64 << 53) as f64
+    to_unit(x)
 }
 
 fn time_seed() -> u64 {
@@ -77,23 +87,44 @@ pub fn initial_seed() -> u64 {
 mod tests {
     use super::*;
 
+    /// Чистая цепочка из 16 значений от seed — воспроизводима побитово.
+    fn chain(seed: u64, n: usize) -> Vec<f64> {
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = lcg_step(x);
+                to_unit(x)
+            })
+            .collect()
+    }
+
     #[test]
     fn одинаковый_seed_даёт_одинаковую_последовательность() {
-        set_seed(20261014);
-        let a: Vec<f64> = (0..16).map(|_| next_random()).collect();
-        set_seed(20261014);
-        let b: Vec<f64> = (0..16).map(|_| next_random()).collect();
+        // Глобальный RND_STATE общий на процесс, а cargo гоняет тесты
+        // параллельно: сравнивать два прогона next_random() нельзя —
+        // между ними может влезть другой тест. Проверяем чистый шаг.
+        let a = chain(20261014, 16);
+        let b = chain(20261014, 16);
         assert_eq!(a, b);
         assert!(a.iter().all(|v| (0.0..1.0).contains(v)));
+        assert!(a.windows(2).all(|w| w[0] != w[1]), "значения не залипают");
     }
 
     #[test]
     fn разный_seed_даёт_разную_последовательность() {
-        set_seed(1);
-        let a: Vec<f64> = (0..8).map(|_| next_random()).collect();
-        set_seed(2);
-        let b: Vec<f64> = (0..8).map(|_| next_random()).collect();
-        assert_ne!(a, b);
+        assert_ne!(chain(1, 8), chain(2, 8));
+    }
+
+    #[test]
+    fn next_random_в_диапазоне_и_не_залипает() {
+        set_seed(424242);
+        let v: Vec<f64> = (0..64).map(|_| next_random()).collect();
+        assert!(
+            v.iter().all(|x| (0.0..1.0).contains(x)),
+            "вне [0,1): {:?}",
+            v
+        );
+        assert!(v.windows(2).any(|w| w[0] != w[1]), "ГПСЧ вырожден");
     }
 
     #[test]
