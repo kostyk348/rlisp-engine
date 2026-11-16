@@ -134,10 +134,8 @@ impl AssetStore {
     /// имена по возрастанию слотов (детерминизм)
     pub fn list(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for s in 0..self.entries.len() {
-            if let Some(a) = &self.entries[s] {
-                out.push(a.name.clone());
-            }
+        for a in self.entries.iter().flatten() {
+            out.push(a.name.clone());
         }
         out
     }

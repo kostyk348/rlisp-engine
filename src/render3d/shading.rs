@@ -163,7 +163,10 @@ pub fn shadow_sample(r3: &R3, wx: f32, wy: f32, wz: f32, bias: f32) -> f32 {
     let nx = lx * inv_lw;
     let ny = ly * inv_lw;
     let nz = lz * inv_lw;
-    if nx < -1.0 || nx > 1.0 || ny < -1.0 || ny > 1.0 || nz < -1.0 || nz > 1.0 {
+    // за пределами [-1,1] по любой оси — вне карты теней (NaN сюда же: освещаем)
+    let in_unit_cube =
+        (-1.0..=1.0).contains(&nx) && (-1.0..=1.0).contains(&ny) && (-1.0..=1.0).contains(&nz);
+    if !in_unit_cube {
         return 1.0;
     }
     let sw = r3.shadow_w;
