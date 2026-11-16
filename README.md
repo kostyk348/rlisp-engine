@@ -191,3 +191,15 @@ Issues — баг-репорты и идеи, Pull Requests — приветст
 ## Лицензия
 
 [MIT](LICENSE).
+
+## Contributing
+
+- **[Good first issues](https://github.com/kostyk348/rlisp-engine/labels/good%20first%20issue)** — scoped tasks with the acceptance
+  criteria written down, sized for one sitting.
+- **[Discussions](https://github.com/kostyk348/rlisp-engine/discussions)** — questions, ideas and "how do I…"; issues are for bugs.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to build, test and submit a change.
+- **[SECURITY.md](SECURITY.md)** — private reporting for vulnerabilities (never a public issue).
+
+Pull requests are reviewed against one rule: the description must say **what problem** it solves and
+**how it was verified** — a CI link or a pasted command output.
+
