@@ -11,6 +11,7 @@
 [![CI](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kostyk348/rlisp-engine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/kostyk348/rlisp-engine?color=ffb347)](https://github.com/kostyk348/rlisp-engine/releases)
 ![Tests](https://img.shields.io/badge/tests-143%20passing-7ee787)
+![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust&logoColor=black)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-critical)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
