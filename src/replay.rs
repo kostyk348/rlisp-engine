@@ -21,6 +21,7 @@
 // (replay-record! "saves/run.rlrp"), (replay-stop!), (replay-load! …),
 // (replay-status) — редактор дергает их через /api/eval и показывает панель.
 
+use crate::interp::symbols::intern;
 use crate::interp::value::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -312,13 +313,13 @@ pub fn encode_input(v: &Value) -> Option<String> {
     if let Value::List(items) = v {
         if items.len() == 2 {
             let kind = match &items[0] {
-                Value::Sym(s) => s.clone(),
+                Value::Sym(s) => s.to_string(),
                 Value::Str(s) => s.clone(),
                 _ => return None,
             };
             let key = match &items[1] {
                 Value::Str(s) => s.clone(),
-                Value::Sym(s) => s.clone(),
+                Value::Sym(s) => s.to_string(),
                 _ => return None,
             };
             return Some(format!("{}:{}", kind, key));
@@ -331,7 +332,7 @@ pub fn encode_input(v: &Value) -> Option<String> {
 pub fn decode_input(s: &str) -> Option<Value> {
     let (kind, key) = s.split_once(':')?;
     Some(Value::List(vec![
-        Value::Sym(kind.to_string()),
+        Value::Sym(intern(&kind.to_string())),
         Value::Str(key.to_string()),
     ]))
 }
@@ -554,7 +555,7 @@ mod tests {
         match decode_input(&s).unwrap() {
             Value::List(items) => {
                 assert_eq!(items.len(), 2);
-                assert!(matches!(&items[0], Value::Sym(k) if k == "key-down"));
+                assert!(matches!(&items[0], Value::Sym(k) if k.as_ref() == "key-down"));
                 assert!(matches!(&items[1], Value::Str(k) if k == "w"));
             }
             _ => panic!("ожидался список"),

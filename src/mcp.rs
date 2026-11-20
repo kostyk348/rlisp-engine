@@ -22,6 +22,7 @@
 // очереди движок просто ждёт следующий запрос (recv — «пауза между кадрами»).
 
 use crate::editor::{eval_string, step_frame, EngineHandle};
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, fmt_value, load_file, GlobalCell};
 use crate::json::Json;
 use crate::png;
@@ -299,7 +300,7 @@ fn call_tool(state: &mut McpState, name: &str, a: &Json) -> Json {
                     .borrow_mut()
                     .queue
                     .push(crate::interp::Value::List(vec![
-                        crate::interp::Value::Sym(ev.into()),
+                        crate::interp::Value::Sym(intern(ev)),
                         crate::interp::Value::Str(k.clone()),
                     ]));
                 text_content(&format!("{} {}", k, if down { "down" } else { "up" }))

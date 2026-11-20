@@ -42,7 +42,7 @@ fn eval_inner(expr: &Value, env: Gc, depth: usize) -> Result<Value, String> {
                     return Ok(Value::Nil);
                 }
                 if let Value::Sym(ref head) = items[0] {
-                    match head.as_str() {
+                    match head.as_ref() {
                         "quote" => {
                             if items.len() != 2 {
                                 return Err("quote: нужна форма (quote x)".into());
@@ -181,7 +181,7 @@ fn eval_inner(expr: &Value, env: Gc, depth: usize) -> Result<Value, String> {
                             if items.len() < 2 {
                                 return Err("let: нужны связывания".into());
                             }
-                            let sequential = head == "let*";
+                            let sequential = head.as_ref() == "let*";
                             let child = gc::alloc_env(Some(env));
                             match &items[1] {
                                 Value::List(bs) => {
@@ -400,7 +400,7 @@ fn qq(t: &Value, env: Gc, lvl: usize, depth: usize) -> Result<Value, String> {
 fn parse_params(v: &Value) -> Result<(Vec<String>, Option<String>), String> {
     match v {
         Value::Nil => Ok((vec![], None)),
-        Value::Sym(s) => Ok((vec![], Some(s.clone()))),
+        Value::Sym(s) => Ok((vec![], Some(s.to_string()))),
         Value::List(items) => {
             let mut ps = Vec::new();
             let mut it = items.iter();

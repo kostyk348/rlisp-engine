@@ -19,6 +19,7 @@
 //   POST /api/ctl  {cmd}          — pause | resume | step | reload
 //   POST /api/save-scene {path}   — сериализовать сцену в Lisp-файл (этап 6)
 
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, fmt_value, parse_program, CoreCtx, Gc, GlobalCell, Value};
 use crate::json::Json;
 use crate::png;
@@ -638,7 +639,7 @@ pub fn drain_editor_cmds(
         for (k, down) in keys {
             let ev = if down { "key-down" } else { "key-up" };
             hal.queue
-                .push(Value::List(vec![Value::Sym(ev.into()), Value::Str(k)]));
+                .push(Value::List(vec![Value::Sym(intern(ev)), Value::Str(k)]));
         }
     }
     reload

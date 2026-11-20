@@ -5,6 +5,7 @@
 
 use crate::gc;
 use crate::hal::{Hal, OutputMode};
+use crate::interp::symbols::intern;
 use crate::interp::{self, apply, env_get, fmt_value, parse_program, CoreCtx, GlobalCell, Value};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -87,7 +88,7 @@ impl Session {
     pub fn key(&mut self, k: &str, down: bool) {
         let kind = if down { "key-down" } else { "key-up" };
         self.hal.borrow_mut().queue.push(Value::List(vec![
-            Value::Sym(kind.to_string()),
+            Value::Sym(intern(&kind.to_string())),
             Value::Str(k.to_string()),
         ]));
     }

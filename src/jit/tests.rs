@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::gc;
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, env_new, eval, parse_program, register_core, CoreCtx, Value};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -310,7 +311,7 @@ fn gen_arith(rng: &mut Xorshift, d: u32) -> Value {
     } else {
         let op = ["+", "-", "*", "/"][(rng.next() % 4) as usize];
         Value::List(vec![
-            Value::Sym(op.into()),
+            Value::Sym(intern(&op.into())),
             gen_arith(rng, d - 1),
             gen_arith(rng, d - 1),
         ])
@@ -327,14 +328,14 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
     } else if pick < 65 {
         let op = ["+", "-", "*", "/"][(rng.next() % 4) as usize];
         Value::List(vec![
-            Value::Sym(op.into()),
+            Value::Sym(intern(&op.into())),
             gen_arith(rng, d - 1),
             gen_arith(rng, d - 1),
         ])
     } else if pick < 78 {
         let op = ["<", "=", ">", "<=", ">="][(rng.next() % 5) as usize];
         Value::List(vec![
-            Value::Sym(op.into()),
+            Value::Sym(intern(&op.into())),
             gen_arith(rng, d - 1),
             gen_arith(rng, d - 1),
         ])
@@ -343,7 +344,7 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
         Value::List(vec![
             Value::Sym("if".into()),
             Value::List(vec![
-                Value::Sym(op.into()),
+                Value::Sym(intern(&op.into())),
                 gen_arith(rng, d - 1),
                 gen_arith(rng, d - 1),
             ]),
@@ -354,7 +355,7 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
         // этап 15: унарные числовые формы (sqrt в генератор не включён —
         // отрицательный аргумент даёт NaN и законную runtime-деоптимизацию)
         let op = ["abs", "floor"][(rng.next() % 2) as usize];
-        Value::List(vec![Value::Sym(op.into()), gen_arith(rng, d - 1)])
+        Value::List(vec![Value::Sym(intern(&op.into())), gen_arith(rng, d - 1)])
     } else if pick < 92 {
         // cond: тест — сравнение, тела — чистая арифметика (числовое ядро)
         let op = ["<", "=", ">", "<=", ">="][(rng.next() % 5) as usize];
@@ -362,7 +363,7 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
             Value::Sym("cond".into()),
             Value::List(vec![
                 Value::List(vec![
-                    Value::Sym(op.into()),
+                    Value::Sym(intern(&op.into())),
                     gen_arith(rng, d - 1),
                     gen_arith(rng, d - 1),
                 ]),
@@ -374,9 +375,9 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
         let op = if rng.next() % 2 == 0 { "and" } else { "or" };
         let cop = ["<", "=", ">", "<=", ">="][(rng.next() % 5) as usize];
         Value::List(vec![
-            Value::Sym(op.into()),
+            Value::Sym(intern(&op.into())),
             Value::List(vec![
-                Value::Sym(cop.into()),
+                Value::Sym(intern(&cop.into())),
                 gen_arith(rng, d - 1),
                 gen_arith(rng, d - 1),
             ]),
@@ -387,7 +388,7 @@ fn gen_expr(rng: &mut Xorshift, d: u32) -> Value {
         let n = 1 + (rng.next() % 2) as usize;
         for i in 0..n {
             binds.push(Value::List(vec![
-                Value::Sym(format!("v{}", i)),
+                Value::Sym(intern(&format!("v{}", i))),
                 gen_arith(rng, d - 1),
             ]));
         }
@@ -408,7 +409,7 @@ fn gen_let_body(rng: &mut Xorshift, d: u32, vars: &[String]) -> Value {
     } else {
         let op = ["+", "-", "*", "/"][(rng.next() % 4) as usize];
         Value::List(vec![
-            Value::Sym(op.into()),
+            Value::Sym(intern(&op.into())),
             gen_let_body(rng, d - 1, vars),
             gen_let_body(rng, d - 1, vars),
         ])

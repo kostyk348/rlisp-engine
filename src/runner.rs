@@ -2,6 +2,7 @@
 
 use crate::cli::Args;
 use crate::hal::{Hal, OutputMode};
+use crate::interp::symbols::intern;
 use crate::interp::{
     apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Value,
 };
@@ -60,7 +61,7 @@ fn parse_input_file(path: &str) -> Result<Vec<(f64, Value)>, String> {
         out.push((
             t,
             Value::List(vec![
-                Value::Sym(ev.into()),
+                Value::Sym(intern(ev)),
                 Value::Str(parts[1].to_string()),
             ]),
         ));

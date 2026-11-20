@@ -1,3 +1,4 @@
+use super::symbols::intern;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,7 +23,7 @@ static GSYM: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn key_str(v: &Value) -> Result<String, String> {
     match v {
-        Value::Sym(s) => Ok(s.clone()),
+        Value::Sym(s) => Ok(s.to_string()),
         Value::Str(s) => Ok(s.clone()),
         Value::Int(i) => Ok(i.to_string()),
         Value::Float(f) => Ok(fmt_float(*f)),
@@ -564,14 +565,14 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
     def(env, "symbol->string", |args| {
         need(args, 1)?;
         match &args[0] {
-            Value::Sym(s) => Ok(Value::Str(s.clone())),
+            Value::Sym(s) => Ok(Value::Str(s.to_string())),
             _ => Err("symbol->string: нужен символ".into()),
         }
     });
     def(env, "string->symbol", |args| {
         need(args, 1)?;
         match &args[0] {
-            Value::Str(s) => Ok(Value::Sym(s.clone())),
+            Value::Str(s) => Ok(Value::Sym(intern(&s.clone()))),
             _ => Err("string->symbol: нужна строка".into()),
         }
     });
@@ -716,7 +717,7 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
     });
     def(env, "gensym", |_: &[Value]| {
         let n = GSYM.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(Value::Sym(format!("g#{}", n)))
+        Ok(Value::Sym(intern(&format!("g#{}", n))))
     });
     def(env, "bit?", |args| {
         need(args, 2)?;
@@ -729,7 +730,7 @@ pub fn register_core(env: Gc, ctx: &CoreCtx) {
         need(args, 1)?;
         let p = match &args[0] {
             Value::Str(s) => s.clone(),
-            Value::Sym(s) => s.clone(),
+            Value::Sym(s) => s.to_string(),
             other => return Err(format!("load: нужен путь: {}", fmt_value(other))),
         };
         let full = resolve_path(&p, &lctx.root);

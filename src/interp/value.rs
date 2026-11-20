@@ -20,7 +20,7 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
-    Sym(String),
+    Sym(Rc<str>),
     Str(String),
     /// Vec-список: код от reader'а и «обычные» списки (как в v0.1–v0.3).
     List(Vec<Value>),
@@ -71,7 +71,7 @@ fn fmt_value_path(v: &Value, seen: &mut HashSet<Gc>) -> String {
         Value::Bool(b) => (if *b { "#t" } else { "#f" }).into(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => fmt_float(*f),
-        Value::Sym(s) => s.clone(),
+        Value::Sym(s) => s.to_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let inner: Vec<String> = items
@@ -183,12 +183,12 @@ pub fn truthy(v: &Value) -> bool {
 }
 
 pub fn is_sym(v: &Value, s: &str) -> bool {
-    matches!(v, Value::Sym(x) if x == s)
+    matches!(v, Value::Sym(x) if x.as_ref() == s)
 }
 
 pub fn as_sym(v: &Value) -> Result<String, String> {
     match v {
-        Value::Sym(s) => Ok(s.clone()),
+        Value::Sym(s) => Ok(s.to_string()),
         other => Err(format!("ожидался символ: {}", fmt_value(other))),
     }
 }

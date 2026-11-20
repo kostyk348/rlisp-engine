@@ -6,6 +6,12 @@
 #![allow(unknown_lints)]
 #![allow(clippy::manual_is_multiple_of)]
 
+#[cfg(feature = "count-allocs")]
+mod alloc_counter;
+#[cfg(feature = "count-allocs")]
+#[global_allocator]
+static GLOBAL_ALLOC: alloc_counter::Counting = alloc_counter::Counting;
+
 mod assets;
 mod audio;
 mod bench;
@@ -89,6 +95,13 @@ fn main() {
     if args.bench {
         if let Err(e) = bench::run_bench(&args) {
             eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.bench_parse_allocs {
+        if let Err(e) = bench::run_bench_parse_allocs() {
+            eprintln!("--bench-parse-allocs: {}", e);
             std::process::exit(1);
         }
         return;

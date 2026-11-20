@@ -1,5 +1,6 @@
 // src/interp/parse.rs — Синтаксический анализ Lisp (скалярный и SIMD-парсеры, лексеры).
 
+use super::symbols::intern;
 use super::{is_sym, vec_into_chain, Value};
 use crate::simd;
 
@@ -171,22 +172,22 @@ fn parse_expr_b(bytes: &[u8], pos: &mut usize) -> Result<Value, String> {
         b'\'' => {
             *pos += 1;
             let e = parse_expr_b(bytes, pos)?;
-            Ok(Value::List(vec![Value::Sym("quote".into()), e]))
+            Ok(Value::List(vec![Value::Sym(intern("quote")), e]))
         }
         b'`' => {
             *pos += 1;
             let e = parse_expr_b(bytes, pos)?;
-            Ok(Value::List(vec![Value::Sym("quasiquote".into()), e]))
+            Ok(Value::List(vec![Value::Sym(intern("quasiquote")), e]))
         }
         b',' => {
             *pos += 1;
             if *pos < bytes.len() && bytes[*pos] == b'@' {
                 *pos += 1;
                 let e = parse_expr_b(bytes, pos)?;
-                Ok(Value::List(vec![Value::Sym("unquote-splicing".into()), e]))
+                Ok(Value::List(vec![Value::Sym(intern("unquote-splicing")), e]))
             } else {
                 let e = parse_expr_b(bytes, pos)?;
-                Ok(Value::List(vec![Value::Sym("unquote".into()), e]))
+                Ok(Value::List(vec![Value::Sym(intern("unquote")), e]))
             }
         }
         b'"' => {
@@ -313,22 +314,22 @@ fn parse_expr(chars: &[char], pos: &mut usize) -> Result<Value, String> {
         '\'' => {
             *pos += 1;
             let e = parse_expr(chars, pos)?;
-            Ok(Value::List(vec![Value::Sym("quote".into()), e]))
+            Ok(Value::List(vec![Value::Sym(intern("quote")), e]))
         }
         '`' => {
             *pos += 1;
             let e = parse_expr(chars, pos)?;
-            Ok(Value::List(vec![Value::Sym("quasiquote".into()), e]))
+            Ok(Value::List(vec![Value::Sym(intern("quasiquote")), e]))
         }
         ',' => {
             *pos += 1;
             if *pos < chars.len() && chars[*pos] == '@' {
                 *pos += 1;
                 let e = parse_expr(chars, pos)?;
-                Ok(Value::List(vec![Value::Sym("unquote-splicing".into()), e]))
+                Ok(Value::List(vec![Value::Sym(intern("unquote-splicing")), e]))
             } else {
                 let e = parse_expr(chars, pos)?;
-                Ok(Value::List(vec![Value::Sym("unquote".into()), e]))
+                Ok(Value::List(vec![Value::Sym(intern("unquote")), e]))
             }
         }
         '"' => {
@@ -498,7 +499,7 @@ fn parse_atom(atom: &str) -> Result<Value, String> {
         _ => false,
     };
     if !numeric_ish {
-        return Ok(Value::Sym(atom.to_string()));
+        return Ok(Value::Sym(intern(atom)));
     }
     if let Ok(i) = atom.parse::<i64>() {
         return Ok(Value::Int(i));
@@ -506,5 +507,5 @@ fn parse_atom(atom: &str) -> Result<Value, String> {
     if let Ok(f) = atom.parse::<f64>() {
         return Ok(Value::Float(f));
     }
-    Ok(Value::Sym(atom.to_string()))
+    Ok(Value::Sym(intern(atom)))
 }

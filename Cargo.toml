@@ -26,6 +26,8 @@ optional = true
 
 [features]
 default = []
+# Счётчик аллокаций для критерия парсера «≤ 0,5 аллокации на токен» (ТЗ rlisp-engine-tz §2.1).
+count-allocs = []
 # Full wgpu-бэкенд: offscreen-рендер + readback в Hal::fb (см. src/gpu.rs).
 wgpu = ["dep:wgpu"]
 # Этап 3: copy-and-patch JIT числовых ядер (x86_64-linux, ноль зависимостей).

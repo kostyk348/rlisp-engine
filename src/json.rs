@@ -312,7 +312,7 @@ pub fn value_to_json(v: &Value) -> Json {
         Value::Bool(b) => Json::Bool(*b),
         Value::Int(i) => Json::int(*i),
         Value::Float(f) => Json::num(*f),
-        Value::Sym(s) => Json::Str(s.clone()),
+        Value::Sym(s) => Json::Str(s.to_string()),
         Value::Str(s) => Json::Str(s.clone()),
         Value::Ptr(id) => Json::int(*id as i64),
         Value::List(items) => Json::Arr(items.iter().map(value_to_json).collect()),
@@ -352,7 +352,7 @@ pub fn json_to_value(j: &Json) -> Value {
                 Value::Float(*x)
             }
         }
-        Json::Str(s) => Value::Str(s.clone()),
+        Json::Str(s) => Value::Str(s.to_string()),
         Json::Arr(items) => Value::List(items.iter().map(json_to_value).collect()),
         Json::Obj(m) => {
             use std::cell::RefCell;
