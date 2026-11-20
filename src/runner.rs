@@ -1,3 +1,4 @@
+use crate::interp::symbols::intern;
 // src/runner.rs — основной цикл движка, eval выражений, hot reload и обработка ввода.
 
 use crate::cli::Args;
@@ -60,7 +61,7 @@ fn parse_input_file(path: &str) -> Result<Vec<(f64, Value)>, String> {
         out.push((
             t,
             Value::List(vec![
-                Value::Sym(ev.into()),
+                Value::Sym(intern(ev)),
                 Value::Str(parts[1].to_string()),
             ]),
         ));

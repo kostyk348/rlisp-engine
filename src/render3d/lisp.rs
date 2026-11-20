@@ -1,3 +1,4 @@
+use crate::interp::symbols::intern;
 // src/render3d/lisp.rs — Биндинги 3D-конвейера к Lisp-окружению (gpu3d-*).
 
 use std::cell::RefCell;
@@ -392,10 +393,10 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         let mut h = hc.borrow_mut();
         if args.is_empty() {
             let s = if h.r3.smooth { "smooth" } else { "flat" };
-            return Ok(Value::Sym(s.into()));
+            return Ok(Value::Sym(intern(s)));
         }
         let smooth = match &args[0] {
-            Value::Sym(s) => s == "smooth",
+            Value::Sym(s) => s.as_ref() == "smooth",
             Value::Str(s) => s == "smooth",
             Value::Bool(b) => *b,
             _ => false,
@@ -413,10 +414,10 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
                 TexFilter::Nearest => "nearest",
                 TexFilter::Bilinear => "bilinear",
             };
-            return Ok(Value::Sym(s.into()));
+            return Ok(Value::Sym(intern(s)));
         }
         let filter = match &args[0] {
-            Value::Sym(s) if s == "bilinear" => TexFilter::Bilinear,
+            Value::Sym(s) if s.as_ref() == "bilinear" => TexFilter::Bilinear,
             Value::Str(s) if s == "bilinear" => TexFilter::Bilinear,
             _ => TexFilter::Nearest,
         };
@@ -425,7 +426,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
             TexFilter::Nearest => "nearest",
             TexFilter::Bilinear => "bilinear",
         };
-        Ok(Value::Sym(s.into()))
+        Ok(Value::Sym(intern(s)))
     });
 
     // использование пирамиды мипмапов: (gpu3d-mipmaps [#t | #f])
@@ -437,7 +438,7 @@ pub fn register_render3d(env: Gc, hal: &Rc<RefCell<Hal>>) {
         }
         let mm = match &args[0] {
             Value::Bool(b) => *b,
-            Value::Sym(s) => s != "nil" && s != "#f" && s != "false",
+            Value::Sym(s) => s.as_ref() != "nil" && s.as_ref() != "#f" && s.as_ref() != "false",
             Value::Int(i) => *i != 0,
             _ => true,
         };

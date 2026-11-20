@@ -2,6 +2,8 @@
 // Запускаются по флагам --bench и --bench-parse.
 
 use crate::cli::Args;
+#[cfg(feature = "count-allocs")]
+use alloc_counter::Counting;
 #[cfg(feature = "jit")]
 use crate::gc;
 use crate::hal::{Hal, OutputMode, Tex};
@@ -105,20 +107,7 @@ pub fn run_bench_parse() -> Result<(), String> {
     println!("== rlisp-engine :: бенчмарк токенизатора/парсера (Этап 3) ==");
     println!("уровень SIMD: {}", simd::level_name(simd::detect()));
 
-    let mut corpus: Vec<(String, String)> = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut entries: Vec<_> = std::fs::read_dir("assets/lisp")
-        .map_err(|e| format!("assets/lisp: {}", e))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lisp"))
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let src = std::fs::read_to_string(e.path())
-            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
-        total_bytes += src.len();
-        corpus.push((e.file_name().to_string_lossy().into_owned(), src));
-    }
+    let (corpus, total_bytes) = load_corpus()?;
     println!(
         "корпус: {} файлов, {} байт (реальные исходы движка, включая русские комментарии)",
         corpus.len(),
@@ -669,4 +658,107 @@ fn bench_3d_shading() -> Result<(), String> {
         "честная метка: программный конвейер на CPU VPS-класса; разброс между запусками ±20% (см. docs/benchmark.md)"
     );
     Ok(())
+}
+
+/// Корпус бенча: `assets/lisp/*.lisp` — реальные исходы движка.
+fn load_corpus() -> Result<(Vec<(String, String)>, usize), String> {
+    let mut corpus: Vec<(String, String)> = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut entries: Vec<_> = std::fs::read_dir("assets/lisp")
+        .map_err(|e| format!("assets/lisp: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lisp"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let src = std::fs::read_to_string(e.path())
+            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
+        total_bytes += src.len();
+        corpus.push((e.file_name().to_string_lossy().into_owned(), src));
+    }
+    Ok((corpus, total_bytes))
+}
+
+/// Сколько лексических токенов потребил бы парсер из этого исхода: скобки, кавычки,
+/// атомы (включая числа), строки как один токен. Комментарии — не токены: парсер их
+/// пропускает, не создавая Value, поэтому считать их токенами значит занизить метрику.
+fn count_tokens(bytes: &[u8]) -> usize {
+    let is_delim = |b: u8| {
+        matches!(b, b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"')
+    };
+    let mut i = 0usize;
+    let mut tokens = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b';' => {
+                i = simd::find_byte(bytes, i + 1, b'\n').unwrap_or(bytes.len());
+            }
+            b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' => {
+                tokens += 1;
+                i += 1;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                    } else {
+                        let closed = bytes[i] == b'"';
+                        i += 1;
+                        if closed {
+                            break;
+                        }
+                    }
+                }
+                tokens += 1;
+            }
+            b if b.is_ascii_whitespace() => i += 1,
+            _ => {
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !is_delim(bytes[i]) {
+                    i += 1;
+                }
+                tokens += 1;
+            }
+        }
+    }
+    tokens
+}
+
+/// Критерий ТЗ (`rlisp-engine-tz.md` §2.1): аллокаций на ASCII-файл ≤ 0,5/токен.
+/// Сборка: `cargo run --release --features count-allocs -- --bench-parse-allocs`.
+pub fn run_bench_parse_allocs() -> Result<(), String> {
+    #[cfg(not(feature = "count-allocs"))]
+    {
+        return Err("соберите с фичей счётчика: cargo run --release --features count-allocs -- --bench-parse-allocs".into());
+    }
+    #[cfg(feature = "count-allocs")]
+    {
+        let (corpus, total_bytes) = load_corpus()?;
+        println!("== rlisp-engine :: аллокации парсера (критерий ≤ 0,5/токен) ==");
+        println!("корпус: {} файлов, {} байт", corpus.len(), total_bytes);
+        let mut allocs_total = 0u64;
+        let mut tokens_total = 0usize;
+        for (name, src) in &corpus {
+            Counting::reset();
+            let _values = interp::parse_program(src)?;
+            let tokens = count_tokens(src.as_bytes());
+            let allocs = Counting::count();
+            allocs_total += allocs;
+            tokens_total += tokens;
+            let per = allocs as f64 / tokens.max(1) as f64;
+            println!("  {:<28} токенов {:>6}  аллокаций {:>6}  = {:.3}/токен", name, tokens, allocs, per);
+        }
+        let per_total = allocs_total as f64 / tokens_total.max(1) as f64;
+        println!(
+            "итого: {} токенов, {} аллокаций = {:.3}/токен — {}",
+            tokens_total,
+            allocs_total,
+            per_total,
+            if per_total <= 0.5 { "OK (≤ 0,5)" } else { "ПРОВАЛ (> 0,5)" }
+        );
+        if per_total > 0.5 {
+            return Err(format!("критерий аллокаций провален: {:.3}/токен > 0,5", per_total));
+        }
+        Ok(())
+    }
 }

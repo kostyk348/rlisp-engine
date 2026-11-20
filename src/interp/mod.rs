@@ -8,6 +8,7 @@ pub mod loader;
 pub mod parse;
 pub mod rng;
 pub mod save;
+pub mod symbols;
 pub mod value;
 
 #[cfg(test)]

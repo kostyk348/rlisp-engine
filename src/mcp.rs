@@ -1,3 +1,4 @@
+use crate::interp::symbols::intern;
 // src/mcp.rs — v0.3: MCP-сервер движка (Model Context Protocol, JSON-RPC 2.0
 // поверх stdio, newline-delimited). «AI Ready»: ИИ-агент подключается к живому
 // движку и управляет им — смотрит сцену, спавнит сущности, правит свойства,
@@ -299,7 +300,7 @@ fn call_tool(state: &mut McpState, name: &str, a: &Json) -> Json {
                     .borrow_mut()
                     .queue
                     .push(crate::interp::Value::List(vec![
-                        crate::interp::Value::Sym(ev.into()),
+                        crate::interp::Value::Sym(intern(ev)),
                         crate::interp::Value::Str(k.clone()),
                     ]));
                 text_content(&format!("{} {}", k, if down { "down" } else { "up" }))

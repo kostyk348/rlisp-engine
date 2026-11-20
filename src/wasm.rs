@@ -1,3 +1,4 @@
+use crate::interp::symbols::intern;
 //! src/wasm.rs — фасад для браузерной песочницы (target wasm32-unknown-unknown).
 //! Сессия = Hal(headless) + интерпретатор; кадр ведёт JS (requestAnimationFrame),
 //! движку отдаётся dt. Никакого fs: скрипт приходит строкой, print уходит в
@@ -87,7 +88,7 @@ impl Session {
     pub fn key(&mut self, k: &str, down: bool) {
         let kind = if down { "key-down" } else { "key-up" };
         self.hal.borrow_mut().queue.push(Value::List(vec![
-            Value::Sym(kind.to_string()),
+            Value::Sym(intern(&kind.to_string())),
             Value::Str(k.to_string()),
         ]));
     }

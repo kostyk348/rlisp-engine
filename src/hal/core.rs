@@ -467,7 +467,7 @@ pub fn base64_decode(src: &str) -> Result<Vec<u8>, String> {
 pub fn str_val(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
-        Value::Sym(s) => s.clone(),
+        Value::Sym(s) => s.to_string(),
         other => fmt_value(other),
     }
 }

@@ -1,3 +1,4 @@
+use crate::interp::symbols::intern;
 // src/editor.rs — v0.3: редактор аля Unity поверх движка. Ноль зависимостей:
 // std::net::TcpListener + std::thread. Философия та же: сервер — «железо»
 // (как PNG-писатель), вся семантика сцены — Lisp (assets/lisp/editor.lisp,
@@ -638,7 +639,7 @@ pub fn drain_editor_cmds(
         for (k, down) in keys {
             let ev = if down { "key-down" } else { "key-up" };
             hal.queue
-                .push(Value::List(vec![Value::Sym(ev.into()), Value::Str(k)]));
+                .push(Value::List(vec![Value::Sym(intern(ev)), Value::Str(k)]));
         }
     }
     reload
