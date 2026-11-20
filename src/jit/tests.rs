@@ -1,9 +1,9 @@
-use crate::interp::symbols::intern;
 // src/jit/tests.rs — тесты JIT-компилятора и согласованости с интерпретатором.
 #![allow(dead_code)]
 
 use super::*;
 use crate::gc;
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, env_new, eval, parse_program, register_core, CoreCtx, Value};
 use std::cell::RefCell;
 use std::path::PathBuf;

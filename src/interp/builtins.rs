@@ -1,4 +1,4 @@
-use crate::interp::symbols::intern;
+use super::symbols::intern;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

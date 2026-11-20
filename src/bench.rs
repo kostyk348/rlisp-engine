@@ -1,9 +1,9 @@
 // src/bench.rs — бенчмарки SIMD, JIT, токенизатора, 2D- и 3D-шейдинга.
 // Запускаются по флагам --bench и --bench-parse.
 
-use crate::cli::Args;
 #[cfg(feature = "count-allocs")]
-use alloc_counter::Counting;
+use crate::alloc_counter::Counting;
+use crate::cli::Args;
 #[cfg(feature = "jit")]
 use crate::gc;
 use crate::hal::{Hal, OutputMode, Tex};
@@ -684,7 +684,10 @@ fn load_corpus() -> Result<(Vec<(String, String)>, usize), String> {
 /// пропускает, не создавая Value, поэтому считать их токенами значит занизить метрику.
 fn count_tokens(bytes: &[u8]) -> usize {
     let is_delim = |b: u8| {
-        matches!(b, b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"')
+        matches!(
+            b,
+            b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"'
+        )
     };
     let mut i = 0usize;
     let mut tokens = 0usize;
@@ -746,7 +749,10 @@ pub fn run_bench_parse_allocs() -> Result<(), String> {
             allocs_total += allocs;
             tokens_total += tokens;
             let per = allocs as f64 / tokens.max(1) as f64;
-            println!("  {:<28} токенов {:>6}  аллокаций {:>6}  = {:.3}/токен", name, tokens, allocs, per);
+            println!(
+                "  {:<28} токенов {:>6}  аллокаций {:>6}  = {:.3}/токен",
+                name, tokens, allocs, per
+            );
         }
         let per_total = allocs_total as f64 / tokens_total.max(1) as f64;
         println!(
@@ -754,10 +760,17 @@ pub fn run_bench_parse_allocs() -> Result<(), String> {
             tokens_total,
             allocs_total,
             per_total,
-            if per_total <= 0.5 { "OK (≤ 0,5)" } else { "ПРОВАЛ (> 0,5)" }
+            if per_total <= 0.5 {
+                "OK (≤ 0,5)"
+            } else {
+                "ПРОВАЛ (> 0,5)"
+            }
         );
         if per_total > 0.5 {
-            return Err(format!("критерий аллокаций провален: {:.3}/токен > 0,5", per_total));
+            return Err(format!(
+                "критерий аллокаций провален: {:.3}/токен > 0,5",
+                per_total
+            ));
         }
         Ok(())
     }

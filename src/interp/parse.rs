@@ -1,6 +1,6 @@
-use crate::interp::symbols::intern;
 // src/interp/parse.rs — Синтаксический анализ Lisp (скалярный и SIMD-парсеры, лексеры).
 
+use super::symbols::intern;
 use super::{is_sym, vec_into_chain, Value};
 use crate::simd;
 

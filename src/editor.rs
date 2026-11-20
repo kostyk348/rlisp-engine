@@ -1,4 +1,3 @@
-use crate::interp::symbols::intern;
 // src/editor.rs — v0.3: редактор аля Unity поверх движка. Ноль зависимостей:
 // std::net::TcpListener + std::thread. Философия та же: сервер — «железо»
 // (как PNG-писатель), вся семантика сцены — Lisp (assets/lisp/editor.lisp,
@@ -20,6 +19,7 @@ use crate::interp::symbols::intern;
 //   POST /api/ctl  {cmd}          — pause | resume | step | reload
 //   POST /api/save-scene {path}   — сериализовать сцену в Lisp-файл (этап 6)
 
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, fmt_value, parse_program, CoreCtx, Gc, GlobalCell, Value};
 use crate::json::Json;
 use crate::png;

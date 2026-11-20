@@ -1,4 +1,3 @@
-use crate::interp::symbols::intern;
 //! src/wasm.rs — фасад для браузерной песочницы (target wasm32-unknown-unknown).
 //! Сессия = Hal(headless) + интерпретатор; кадр ведёт JS (requestAnimationFrame),
 //! движку отдаётся dt. Никакого fs: скрипт приходит строкой, print уходит в
@@ -6,6 +5,7 @@ use crate::interp::symbols::intern;
 
 use crate::gc;
 use crate::hal::{Hal, OutputMode};
+use crate::interp::symbols::intern;
 use crate::interp::{self, apply, env_get, fmt_value, parse_program, CoreCtx, GlobalCell, Value};
 use std::cell::RefCell;
 use std::path::PathBuf;

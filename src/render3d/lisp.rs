@@ -1,6 +1,6 @@
-use crate::interp::symbols::intern;
 // src/render3d/lisp.rs — Биндинги 3D-конвейера к Lisp-окружению (gpu3d-*).
 
+use crate::interp::symbols::intern;
 use std::cell::RefCell;
 use std::rc::Rc;
 

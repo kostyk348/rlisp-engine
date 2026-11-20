@@ -1,4 +1,3 @@
-use crate::interp::symbols::intern;
 // src/replay.rs — детерминированное воспроизведение прогона.
 //
 // Идея та же, что и во всём движке: Rust — «железо». Он умеет только снять
@@ -22,6 +21,7 @@ use crate::interp::symbols::intern;
 // (replay-record! "saves/run.rlrp"), (replay-stop!), (replay-load! …),
 // (replay-status) — редактор дергает их через /api/eval и показывает панель.
 
+use crate::interp::symbols::intern;
 use crate::interp::value::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

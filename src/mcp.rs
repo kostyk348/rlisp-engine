@@ -1,4 +1,3 @@
-use crate::interp::symbols::intern;
 // src/mcp.rs — v0.3: MCP-сервер движка (Model Context Protocol, JSON-RPC 2.0
 // поверх stdio, newline-delimited). «AI Ready»: ИИ-агент подключается к живому
 // движку и управляет им — смотрит сцену, спавнит сущности, правит свойства,
@@ -23,6 +22,7 @@ use crate::interp::symbols::intern;
 // очереди движок просто ждёт следующий запрос (recv — «пауза между кадрами»).
 
 use crate::editor::{eval_string, step_frame, EngineHandle};
+use crate::interp::symbols::intern;
 use crate::interp::{env_get, fmt_value, load_file, GlobalCell};
 use crate::json::Json;
 use crate::png;

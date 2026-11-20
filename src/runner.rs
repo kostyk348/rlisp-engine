@@ -1,8 +1,8 @@
-use crate::interp::symbols::intern;
 // src/runner.rs — основной цикл движка, eval выражений, hot reload и обработка ввода.
 
 use crate::cli::Args;
 use crate::hal::{Hal, OutputMode};
+use crate::interp::symbols::intern;
 use crate::interp::{
     apply, env_define, env_get, env_new, fmt_value, load_file, parse_program, CoreCtx, Value,
 };
