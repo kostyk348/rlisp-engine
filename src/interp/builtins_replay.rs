@@ -53,7 +53,8 @@ pub fn register_replay_builtins(env: Gc) {
     // ——— запись и воспроизведение прогона ———
     def(env, "replay-record!", |args| {
         let path = match args.first() {
-            Some(Value::Str(s)) | Some(Value::Sym(s)) => s.clone(),
+            Some(Value::Str(s)) => s.clone(),
+            Some(Value::Sym(s)) => s.to_string(),
             _ => return Err("replay-record!: нужно (replay-record! \"путь.rlrp\")".into()),
         };
         // в файл идёт seed НАЧАЛА прогона: запись, начатая с середины,
@@ -72,7 +73,8 @@ pub fn register_replay_builtins(env: Gc) {
     });
     def(env, "replay-load!", |args| {
         let path = match args.first() {
-            Some(Value::Str(s)) | Some(Value::Sym(s)) => s.clone(),
+            Some(Value::Str(s)) => s.clone(),
+            Some(Value::Sym(s)) => s.to_string(),
             _ => return Err("replay-load!: нужно (replay-load! \"путь.rlrp\")".into()),
         };
         match replay::start_replay(&path) {

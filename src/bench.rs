@@ -7,11 +7,113 @@ use crate::gc;
 use crate::hal::{Hal, OutputMode, Tex};
 use crate::interp::{self, env_define, load_file, parse_program, Value};
 use crate::make_context;
-use crate::{gpu, render3d, simd};
+use crate::{alloc_probe, gpu, render3d, simd};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
+
+/// Корпус бенчмарка reader'а: реальные исходы движка `assets/lisp/*.lisp`.
+fn load_parse_corpus() -> Result<(Vec<(String, String)>, usize), String> {
+    let mut corpus: Vec<(String, String)> = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut entries: Vec<_> = std::fs::read_dir("assets/lisp")
+        .map_err(|e| format!("assets/lisp: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lisp"))
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let src = std::fs::read_to_string(e.path())
+            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
+        total_bytes += src.len();
+        corpus.push((e.file_name().to_string_lossy().into_owned(), src));
+    }
+    Ok((corpus, total_bytes))
+}
+
+/// `--bench-parse-allocs`: аллокации быстрого reader'а на токен по файлам
+/// корпуса. Критерий ТЗ §2 п.1 — ≤ 0,5 аллокации на токен для ASCII-файла.
+pub fn run_bench_parse_allocs() -> Result<(), String> {
+    println!("== rlisp-engine :: аллокации reader'а (критерий ≤ 0,5/токен) ==");
+    let (corpus, total_bytes) = load_parse_corpus()?;
+    println!(
+        "корпус: {} файлов, {} байт; счётчик — глобальный аллокатор src/alloc_probe.rs",
+        corpus.len(),
+        total_bytes
+    );
+    println!(
+        "{:<26} {:>7} {:>8} {:>10} {:>12} {:>9}",
+        "файл", "байт", "лексем", "аллокаций", "аллоц.байт", "alloc/ток"
+    );
+
+    let (mut a_all, mut t_all) = (0u64, 0u64);
+    let (mut a_asc, mut t_asc) = (0u64, 0u64);
+    for (name, src) in &corpus {
+        let toks = alloc_probe::tokens_of(src);
+        alloc_probe::start();
+        let ast = interp::parse_program(src)?;
+        alloc_probe::stop();
+        let (allocs, bytes) = alloc_probe::snapshot();
+        drop(ast);
+        let per = allocs as f64 / toks.max(1) as f64;
+        println!(
+            "{:<26} {:>7} {:>8} {:>10} {:>12} {:>9.3}",
+            name,
+            src.len(),
+            toks,
+            allocs,
+            bytes,
+            per
+        );
+        a_all += allocs;
+        t_all += toks;
+        if src.is_ascii() {
+            a_asc += allocs;
+            t_asc += toks;
+        }
+    }
+    let per_all = a_all as f64 / t_all.max(1) as f64;
+    println!(
+        "[итог] весь корпус: {} аллокаций / {} лексем = {:.3} alloc/токен",
+        a_all, t_all, per_all
+    );
+    // чистых ASCII-файлов в корпусе нет (русские комментарии), поэтому
+    // критерий считается по ВСЕМУ корпусу — это строже, чем «ASCII-файл»
+    println!(
+        "[итог] файлов из чистого ASCII: 0 (комментарии на русском) — критерий считаем по всему корпусу"
+    );
+    // тот же замер на старом reader'е — для честного сравнения
+    alloc_probe::start();
+    for (_, src) in &corpus {
+        let _ = interp::parse_program_scalar(src)?;
+    }
+    alloc_probe::stop();
+    let (a_scalar, _) = alloc_probe::snapshot();
+    println!(
+        "[итог] старый reader: {} аллокаций / {} лексем = {:.3} alloc/токен",
+        a_scalar,
+        t_all,
+        a_scalar as f64 / t_all.max(1) as f64
+    );
+    let per_criterion = if t_asc > 0 {
+        a_asc as f64 / t_asc as f64
+    } else {
+        per_all
+    };
+    if per_criterion > 0.5 {
+        return Err(format!(
+            "критерий FAILED: {:.3} аллокаций на токен > 0,5",
+            per_criterion
+        ));
+    }
+    println!(
+        "[критерий] ≤ 0,5 alloc/токен — PASSED ({:.3})",
+        per_criterion
+    );
+    Ok(())
+}
+
 
 #[cfg(feature = "jit")]
 fn bench_jit() -> Result<(), String> {
@@ -98,27 +200,14 @@ fn bench_jit() -> Result<(), String> {
 
 pub fn run_bench_parse() -> Result<(), String> {
     // Этап 3: честное сравнение старого посимвольного reader'а
-    // (parse_program_scalar, v0.1–v0.3) и нового SIMD-токенизатора
-    // (parse_program → parse_program_simd, src/simd.rs: byte-class скан SSE2)
+    // (parse_program_scalar, v0.1–v0.3) и быстрого reader'а
+    // (parse_program → parse_program_simd, byte-class скан + интерн символов)
     // на реальном корпусе assets/lisp/*.lisp. Оба пути дают одинаковые AST —
     // сверка до замера; расхождение = ошибка, бенчмарк не продолжается.
-    println!("== rlisp-engine :: бенчмарк токенизатора/парсера (Этап 3) ==");
+    println!("== rlisp-engine :: бенчмарк reader'а (Этап 3) ==");
     println!("уровень SIMD: {}", simd::level_name(simd::detect()));
 
-    let mut corpus: Vec<(String, String)> = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut entries: Vec<_> = std::fs::read_dir("assets/lisp")
-        .map_err(|e| format!("assets/lisp: {}", e))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("lisp"))
-        .collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let src = std::fs::read_to_string(e.path())
-            .map_err(|err| format!("{}: {}", e.path().display(), err))?;
-        total_bytes += src.len();
-        corpus.push((e.file_name().to_string_lossy().into_owned(), src));
-    }
+    let (corpus, total_bytes) = load_parse_corpus()?;
     println!(
         "корпус: {} файлов, {} байт (реальные исходы движка, включая русские комментарии)",
         corpus.len(),
@@ -221,6 +310,34 @@ pub fn run_bench_parse() -> Result<(), String> {
         mbs(dt_simd)
     );
     println!("[парсер] ускорение: {:.2}x (критерий этапа: ≥3x)", speedup);
+
+    // ——— аллокации на токен (критерий ТЗ §2 п.1: ≤ 0,5 для ASCII) ———
+    let tokens: u64 = corpus.iter().map(|(_, s)| alloc_probe::tokens_of(s)).sum();
+    alloc_probe::start();
+    for (_, src) in &corpus {
+        let _ = interp::parse_program_scalar(src)?;
+    }
+    alloc_probe::stop();
+    let (a_scalar, b_scalar) = alloc_probe::snapshot();
+    alloc_probe::start();
+    for (_, src) in &corpus {
+        let _ = interp::parse_program(src)?;
+    }
+    alloc_probe::stop();
+    let (a_fast, b_fast) = alloc_probe::snapshot();
+    println!(
+        "[аллокации] лексем: {}; старый reader: {} аллокаций ({:.3}/токен, {} КБ)",
+        tokens,
+        a_scalar,
+        a_scalar as f64 / tokens as f64,
+        b_scalar / 1024
+    );
+    println!(
+        "[аллокации] быстрый reader: {} аллокаций ({:.3}/токен, {} КБ) — критерий ≤ 0,5",
+        a_fast,
+        a_fast as f64 / tokens as f64,
+        b_fast / 1024
+    );
     Ok(())
 }
 

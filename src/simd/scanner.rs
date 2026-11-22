@@ -1,153 +1,254 @@
-// src/simd/scanner.rs — SIMD-токенизатор и byte-class скан для горячего пути reader'а
+// src/simd/scanner.rs — byte-class скан горячего пути reader'а.
+//
+// Один lookup таблицы классов на байт вместо цепочки сравнений:
+//   C_ATOM (0) — обычный байт атома,
+//   C_WS   (1) — ASCII-пробельный (09..0D, 20),
+//   C_SYN  (2) — синтаксис/разделитель: ( ) [ ] ' ` , ; ",
+//   C_HI   (3) — байт >= 0x80 (юникод: пробел или буква — решает скаляр).
+//
+// Таблица строится в const-контексте (без OnceLock и без инициализации в
+// рантайме). SSE2 оставлен там, где скан ДЛИННЫЙ и окупает подготовку
+// вектора: find_byte (строки, комментарии). На коротких атомах (средняя
+// длина символа в корпусе — 5 байт) таблица быстрее: подготовка 16-байтного
+// вектора дороже самого прогона.
 
-/// Класс байта, на котором останавливается лексический скан.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Hit {
-    /// ASCII-пробельный байт (09..0D, 20)
-    Ws(u8),
-    /// разделитель/синтаксис лексем: ( ) [ ] ' ` , ; "
-    Delim(u8),
-    /// байт >= 0x80 — нужен скалярный разбор (UTF-8)
-    NonAscii(u8),
-}
+pub const C_ATOM: u8 = 0;
+pub const C_WS: u8 = 1;
+pub const C_SYN: u8 = 2;
+pub const C_HI: u8 = 3;
 
-pub(crate) fn hit_of(b: u8) -> Hit {
-    match b {
-        0x09..=0x0D | 0x20 => Hit::Ws(b),
-        b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"' => Hit::Delim(b),
-        _ => Hit::NonAscii(b),
-    }
-}
+/// Класс каждого байта; см. константы C_*.
+pub static CLASS: [u8; 256] = build_class();
 
-/// Скалярный fallback (и хвост < 16 байт): ровно та же семантика классов.
-pub fn next_hit_scalar(bytes: &[u8], mut pos: usize) -> Option<(usize, Hit)> {
-    while pos < bytes.len() {
-        let b = bytes[pos];
-        if b < 0x80 {
-            if matches!(b, 0x09..=0x0D | 0x20)
-                || matches!(
-                    b,
-                    b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"'
-                )
-            {
-                return Some((pos, hit_of(b)));
-            }
-            pos += 1;
+const fn build_class() -> [u8; 256] {
+    let mut t = [C_ATOM; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let b = i as u8;
+        t[i] = if b >= 0x80 {
+            C_HI
         } else {
-            return Some((pos, Hit::NonAscii(b)));
-        }
+            match b {
+                0x09..=0x0D | 0x20 => C_WS,
+                b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"' => C_SYN,
+                _ => C_ATOM,
+            }
+        };
+        i += 1;
     }
-    None
+    t
 }
 
-/// Первый «особый» байт с позиции pos: Ws | Delim | NonAscii; None — конец.
-/// Портативно: на x86_64 — SSE2, иначе скаляр.
-pub fn next_hit(bytes: &[u8], pos: usize) -> Option<(usize, Hit)> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse2") {
-            return next_hit_sse2(bytes, pos);
-        }
+/// Длина UTF-8 символа по первому байту (1, если байт не стартовый —
+/// defensive: до такого не доходит по инварианту границ среза).
+#[inline]
+pub fn utf8_len(b: u8) -> usize {
+    match b {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
     }
-    next_hit_scalar(bytes, pos)
 }
 
-/// memchr-стиль: первый байт `target` с позиции pos (для пропуска ;-комментариев
-/// и сканов внутри строк). Портативно, на x86_64 — SSE2.
+/// Символ в позиции i (граница UTF-8 гарантирована); None — обрезано на конце.
+#[inline(always)]
+pub fn char_at(bytes: &[u8], i: usize) -> Option<char> {
+    if i >= bytes.len() {
+        return None;
+    }
+    let len = utf8_len(bytes[i]);
+    if i + len > bytes.len() {
+        return None;
+    }
+    std::str::from_utf8(&bytes[i..i + len]).ok()?.chars().next()
+}
+
+/// Пропуск пробелов и `;`-комментариев. Семантика старого skip_ws:
+/// `;` — до конца строки; юникодные пробелы (U+00A0, U+2028, …) — пробелы;
+/// прочие байты >= 0x80 — содержимое атома (остановка).
+/// Возвращает позицию первого значимого байта или bytes.len().
+#[inline(always)]
+pub fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {
+    loop {
+        if pos >= bytes.len() {
+            return pos;
+        }
+        match CLASS[bytes[pos] as usize] {
+            C_WS => pos += 1,
+            C_SYN if bytes[pos] == b';' => {
+                pos = match find_byte(bytes, pos + 1, b'\n') {
+                    Some(i) => i,
+                    None => return bytes.len(),
+                };
+            }
+            C_HI => match char_at(bytes, pos) {
+                Some(ch) if ch.is_whitespace() => pos += ch.len_utf8(),
+                _ => return pos,
+            },
+            _ => return pos,
+        }
+    }
+}
+
+/// Конец атома: первый пробельный/синтаксический байт; юникодные не-пробелы
+/// (буквы) — часть атома. Возвращает позицию разделителя или bytes.len().
+#[inline(always)]
+pub fn atom_end(bytes: &[u8], mut pos: usize) -> usize {
+    let n = bytes.len();
+    loop {
+        if pos >= n {
+            return n;
+        }
+        match CLASS[bytes[pos] as usize] {
+            C_ATOM => {
+                pos += 1;
+                // прогон по ASCII-атому: один lookup на байт, без ветвлений
+                // на класс (рядом стоящие байты атома — самый частый случай)
+                while pos < n && CLASS[bytes[pos] as usize] == C_ATOM {
+                    pos += 1;
+                }
+            }
+            C_HI => match char_at(bytes, pos) {
+                Some(ch) if !ch.is_whitespace() => pos += ch.len_utf8(),
+                _ => return pos,
+            },
+            _ => return pos,
+        }
+    }
+}
+
+/// memchr-стиль: первый байт `target` с позиции pos (строки, комментарии).
+/// Портативно, на x86_64 — SSE2.
 pub fn find_byte(bytes: &[u8], pos: usize, target: u8) -> Option<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("sse2") {
-            return find_byte_sse2(bytes, pos, target);
+            return unsafe { find_byte_sse2(bytes, pos, target) };
         }
     }
     (pos..bytes.len()).find(|&i| bytes[i] == target)
 }
 
 #[cfg(target_arch = "x86_64")]
-static WS_SET: [u8; 16] = [
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
-#[cfg(target_arch = "x86_64")]
-static DL_SET: [u8; 16] = [
-    b'(', b')', b'[', b']', b'\'', b'`', b',', b';', b'"', 0, 0, 0, 0, 0, 0, 0,
-];
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-pub(crate) fn next_hit_sse2(bytes: &[u8], mut pos: usize) -> Option<(usize, Hit)> {
+pub(crate) unsafe fn find_byte_sse2(bytes: &[u8], mut pos: usize, target: u8) -> Option<usize> {
     use std::arch::x86_64::*;
-    unsafe {
-        // векторы-наборы читаются из static (без постройки на стеке каждый вызов)
-        let ws_v = _mm_loadu_si128(WS_SET.as_ptr() as *const __m128i);
-        let dl_v = _mm_loadu_si128(DL_SET.as_ptr() as *const __m128i);
-        let ws_vecs: [__m128i; 6] = [
-            _mm_set1_epi8(0x09),
-            _mm_set1_epi8(0x0A),
-            _mm_set1_epi8(0x0B),
-            _mm_set1_epi8(0x0C),
-            _mm_set1_epi8(0x0D),
-            _mm_set1_epi8(0x20),
-        ];
-        let dl_vecs: [__m128i; 9] = [
-            _mm_set1_epi8(b'(' as i8),
-            _mm_set1_epi8(b')' as i8),
-            _mm_set1_epi8(b'[' as i8),
-            _mm_set1_epi8(b']' as i8),
-            _mm_set1_epi8(b'\'' as i8),
-            _mm_set1_epi8(b'`' as i8),
-            _mm_set1_epi8(b',' as i8),
-            _mm_set1_epi8(b';' as i8),
-            _mm_set1_epi8(b'"' as i8),
-        ];
-        let zero = _mm_setzero_si128();
-        let sign_mask_v = _mm_cmplt_epi8(zero, zero); // все единицы
-        while pos + 16 <= bytes.len() {
-            let v = _mm_loadu_si128(bytes.as_ptr().add(pos) as *const __m128i);
-            // WS: точные 6 сравнений (байт 0 в наборе не даёт ложных срабатываний:
-            // в полном блоке текста нулевых байтов нет, а байт 0 — атом-символ)
-            let mut m_ws = _mm_movemask_epi8(_mm_cmpeq_epi8(v, ws_vecs[0]));
-            for w in ws_vecs[1..].iter() {
-                m_ws |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, *w));
-            }
-            let mut m_dl = _mm_movemask_epi8(_mm_cmpeq_epi8(v, dl_vecs[0]));
-            for d in dl_vecs[1..].iter() {
-                m_dl |= _mm_movemask_epi8(_mm_cmpeq_epi8(v, *d));
-            }
-            // не-ASCII (байты >= 0x80 знаковые отрицательные)
-            let m_na = _mm_movemask_epi8(_mm_cmplt_epi8(v, zero));
-            let m_all = m_ws | m_dl | m_na;
-            if m_all == 0 {
-                pos += 16;
-                continue;
-            }
-            let _ = (&ws_v, &dl_v, &sign_mask_v);
-            let bit = m_all.trailing_zeros() as usize;
-            let b = bytes[pos + bit];
-            let hit = hit_of(b);
-            if b == 0 {
-                // нулевой байт — атом-символ (семантика старого пути), не остановка
-                return next_hit_scalar(bytes, pos + bit + 1).map(|(i, h)| (i, h));
-            }
-            return Some((pos + bit, hit));
+    let t = _mm_set1_epi8(target as i8);
+    while pos + 16 <= bytes.len() {
+        let v = _mm_loadu_si128(bytes.as_ptr().add(pos) as *const __m128i);
+        let m = _mm_movemask_epi8(_mm_cmpeq_epi8(v, t));
+        if m != 0 {
+            return Some(pos + m.trailing_zeros() as usize);
         }
-        next_hit_scalar(bytes, pos)
+        pos += 16;
     }
+    (pos..bytes.len()).find(|&i| bytes[i] == target)
 }
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn find_byte_sse2(bytes: &[u8], mut pos: usize, target: u8) -> Option<usize> {
-    use std::arch::x86_64::*;
-    unsafe {
-        let t = _mm_set1_epi8(target as i8);
-        while pos + 16 <= bytes.len() {
-            let v = _mm_loadu_si128(bytes.as_ptr().add(pos) as *const __m128i);
-            let m = _mm_movemask_epi8(_mm_cmpeq_epi8(v, t));
-            if m != 0 {
-                return Some(pos + m.trailing_zeros() as usize);
+// ————————————————————— тесты сканера —————————————————————
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Эталонный скан «конца атома» прямым посимвольным перебором
+    /// (тот же язык, что у старого reader'а).
+    fn atom_end_ref(bytes: &[u8], pos: usize) -> usize {
+        let mut i = pos;
+        while i < bytes.len() {
+            match char_at(bytes, i) {
+                Some(ch) if !ch.is_whitespace() && !"()[]'`,;\"".contains(ch) => {
+                    i += ch.len_utf8()
+                }
+                _ => break,
             }
-            pos += 16;
         }
-        (pos..bytes.len()).find(|&i| bytes[i] == target)
+        i
+    }
+
+    fn skip_ws_ref(bytes: &[u8], pos: usize) -> usize {
+        let mut i = pos;
+        loop {
+            match char_at(bytes, i) {
+                Some(ch) if ch.is_whitespace() => i += ch.len_utf8(),
+                Some(';') => {
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                _ => return i,
+            }
+        }
+    }
+
+    #[test]
+    fn test_class_table_consistency() {
+        // таблица обязана совпадать с посимвольной проверкой на всех 256 байтах
+        for b in 0u8..=255 {
+            let one = [b];
+            let cls = CLASS[b as usize];
+            // невалидный одиночный байт >= 0x80 в &str невозможен — эталон
+            // для него не определён (char_at вернёт None), пропускаем
+            if char_at(&one, 0).is_none() {
+                continue;
+            }
+            let ref_atom = atom_end_ref(&one, 0);
+            match cls {
+                C_ATOM => assert_eq!(ref_atom, 1, "байт {:#04x} должен быть атомом", b),
+                C_HI => assert_eq!(ref_atom, 1, "не-ASCII байт {:#04x} — атом", b),
+                _ => assert_eq!(ref_atom, 0, "байт {:#04x} — разделитель/пробел", b),
+            }
+        }
+    }
+
+    #[test]
+    fn test_scanner_equivalence() {
+        let long = vec![b'a'; 100];
+        let cases: &[&[u8]] = &[
+            b"",
+            b"   \t\r\n",
+            b"(+ 1 2)",
+            b"; comment here\n(+ x y)",
+            b"\"string with \\\"escapes\\\"\"",
+            b"identifier-with-dashes and numbers 12345",
+            b"hello \xD0\xBF non-ascii \xFF world",
+            b"\xC2\xA0nbsp\xE2\x80\xA8sep",
+            &long,
+        ];
+        for bytes in cases {
+            let mut pos = 0usize;
+            loop {
+                assert_eq!(
+                    skip_ws(bytes, pos),
+                    skip_ws_ref(bytes, pos),
+                    "skip_ws на {:?} с {}",
+                    bytes,
+                    pos
+                );
+                let p = skip_ws(bytes, pos);
+                if p >= bytes.len() {
+                    break;
+                }
+                assert_eq!(
+                    atom_end(bytes, p),
+                    atom_end_ref(bytes, p),
+                    "atom_end на {:?} с {}",
+                    bytes,
+                    p
+                );
+                pos = atom_end(bytes, p).max(p + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_scanner_find_byte() {
+        let haystack = b"0123456789abcdef0123456789abcdef"; // 32 байта
+        assert_eq!(find_byte(haystack, 0, b'0'), Some(0));
+        assert_eq!(find_byte(haystack, 1, b'0'), Some(16));
+        assert_eq!(find_byte(haystack, 17, b'0'), None);
+        assert_eq!(find_byte(haystack, 0, b'f'), Some(15));
+        assert_eq!(find_byte(haystack, 16, b'f'), Some(31));
+        assert_eq!(find_byte(haystack, 0, b'z'), None);
     }
 }

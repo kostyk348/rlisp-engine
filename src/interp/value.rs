@@ -14,13 +14,108 @@ use crate::gc::{self, Gc};
 
 pub type NativeFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 
+/// Символ Lisp: разделяемая (`Rc<str>`) строка из интерна-таблицы reader'а.
+///
+/// Зачем не `String`: парсер корпуса `assets/lisp` строит ~29k символов на
+/// 57k токенов, из них уникальны ~2k — `String` давал по аллокации на каждое
+/// вхождение (`malloc` + `free` ≈ половина времени разбора). Интерн отдаёт
+/// клон `Rc` (инкремент счётчика) без обращения к аллокатору.
+///
+/// Семантика — ровно строка: `Deref<Target=str>`, `as_str()`, `Display`,
+/// сравнения с `str`/`&str`/`String` в обе стороны, `Borrow<str>` для
+/// `HashMap<String, _>::get(sym)`.
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
+pub struct SymStr(Rc<str>);
+
+impl SymStr {
+    pub fn new(s: &str) -> Self {
+        SymStr(Rc::from(s))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for SymStr {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+impl AsRef<str> for SymStr {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+impl std::borrow::Borrow<str> for SymStr {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Display for SymStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::fmt::Debug for SymStr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.0, f)
+    }
+}
+impl From<&str> for SymStr {
+    fn from(s: &str) -> Self {
+        SymStr(Rc::from(s))
+    }
+}
+impl From<String> for SymStr {
+    fn from(s: String) -> Self {
+        SymStr(Rc::from(s))
+    }
+}
+impl From<Rc<str>> for SymStr {
+    fn from(s: Rc<str>) -> Self {
+        SymStr(s)
+    }
+}
+impl From<SymStr> for String {
+    fn from(s: SymStr) -> String {
+        s.0.to_string()
+    }
+}
+impl PartialEq<str> for SymStr {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0 == other
+    }
+}
+impl PartialEq<&str> for SymStr {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
+impl PartialEq<String> for SymStr {
+    fn eq(&self, other: &String) -> bool {
+        &*self.0 == other.as_str()
+    }
+}
+impl PartialEq<SymStr> for str {
+    fn eq(&self, other: &SymStr) -> bool {
+        self == &*other.0
+    }
+}
+impl PartialEq<SymStr> for &str {
+    fn eq(&self, other: &SymStr) -> bool {
+        *self == &*other.0
+    }
+}
+
 #[derive(Clone)]
 pub enum Value {
     Nil,
     Bool(bool),
     Int(i64),
     Float(f64),
-    Sym(String),
+    /// Символ: разделяемая строка (интерн reader'а), см. [`SymStr`].
+    Sym(SymStr),
     Str(String),
     /// Vec-список: код от reader'а и «обычные» списки (как в v0.1–v0.3).
     List(Vec<Value>),
@@ -71,7 +166,7 @@ fn fmt_value_path(v: &Value, seen: &mut HashSet<Gc>) -> String {
         Value::Bool(b) => (if *b { "#t" } else { "#f" }).into(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => fmt_float(*f),
-        Value::Sym(s) => s.clone(),
+        Value::Sym(s) => s.to_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let inner: Vec<String> = items
@@ -188,7 +283,7 @@ pub fn is_sym(v: &Value, s: &str) -> bool {
 
 pub fn as_sym(v: &Value) -> Result<String, String> {
     match v {
-        Value::Sym(s) => Ok(s.clone()),
+        Value::Sym(s) => Ok(s.to_string()),
         other => Err(format!("ожидался символ: {}", fmt_value(other))),
     }
 }

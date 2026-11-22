@@ -243,7 +243,7 @@ pub fn register(env: crate::interp::Gc, store: Rc<RefCell<Vec<Ecs>>>) {
     fn str_of(v: &V) -> Result<String, String> {
         match v {
             V::Str(s) => Ok(s.clone()),
-            V::Sym(s) => Ok(s.clone()),
+            V::Sym(s) => Ok(s.to_string()),
             _ => Err("ecs: ожидалась строка (имя компонента)".into()),
         }
     }

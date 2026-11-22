@@ -400,7 +400,7 @@ fn qq(t: &Value, env: Gc, lvl: usize, depth: usize) -> Result<Value, String> {
 fn parse_params(v: &Value) -> Result<(Vec<String>, Option<String>), String> {
     match v {
         Value::Nil => Ok((vec![], None)),
-        Value::Sym(s) => Ok((vec![], Some(s.clone()))),
+        Value::Sym(s) => Ok((vec![], Some(s.to_string()))),
         Value::List(items) => {
             let mut ps = Vec::new();
             let mut it = items.iter();

@@ -15,6 +15,8 @@ pub struct Args {
     pub fast: bool,
     pub bench: bool,
     pub bench_parse: bool,
+    /// --bench-parse-allocs: аллокации reader'а на токен (критерий ≤ 0,5).
+    pub bench_parse_allocs: bool,
     pub eval_code: Option<String>,
     pub serve: bool,
     pub port: u16,
@@ -42,6 +44,7 @@ impl Default for Args {
             fast: false,
             bench: false,
             bench_parse: false,
+            bench_parse_allocs: false,
             eval_code: None,
             serve: false,
             port: 7300,
@@ -76,9 +79,12 @@ rlisp-engine — игровой движок как Lisp-машина (Rust = т
   --fast          без привязки к реальному времени
   --width W --height H   стартовый размер экрана
   --bench         бенчмарк SIMD-слоя + 2D-кадра + 3D-шейдинга (этап 7)
-  --bench-parse   бенчмарк токенизатора/парсера: старый посимвольный reader vs
-                  новый SIMD-сканер (src/simd.rs) на реальном корпусе
-                  assets/lisp/*.lisp; оба пути обязаны давать одинаковые AST
+  --bench-parse   бенчмарк reader'ов: старый посимвольный vs быстрый
+                  (byte-class скан + интерн символов, src/interp/parse_fast.rs)
+                  на реальном корпусе assets/lisp/*.lisp; оба пути обязаны
+                  давать одинаковые AST
+  --bench-parse-allocs  аллокации быстрого reader'а на токен (критерий ≤ 0,5)
+                  по файлам корпуса; счётчик — src/alloc_probe.rs
   --wgpu          GPU-бэкенд за фасадом HAL (фича `wgpu`): offscreen-рендер +
                   readback в фреймбуфер; без адаптера — откат на программный
                   растр с предупреждением (все скрипты работают как раньше)
@@ -140,6 +146,7 @@ pub fn parse_args() -> Result<Args, String> {
             "--fast" => args.fast = true,
             "--bench" => args.bench = true,
             "--bench-parse" => args.bench_parse = true,
+            "--bench-parse-allocs" => args.bench_parse_allocs = true,
             "--wgpu" => args.wgpu = true,
             "--eval" => args.eval_code = Some(it.next().ok_or("--eval: нужно выражение")?),
             "--serve" => args.serve = true,

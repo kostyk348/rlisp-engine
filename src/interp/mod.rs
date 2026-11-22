@@ -6,6 +6,7 @@ pub mod env;
 pub mod eval;
 pub mod loader;
 pub mod parse;
+pub mod parse_fast;
 pub mod rng;
 pub mod save;
 pub mod value;
@@ -18,6 +19,7 @@ pub use env::*;
 pub use eval::*;
 pub use loader::*;
 pub use parse::*;
+pub use parse_fast::Reader;
 pub use value::*;
 
 pub use crate::gc::Gc;

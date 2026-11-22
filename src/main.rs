@@ -6,6 +6,7 @@
 #![allow(unknown_lints)]
 #![allow(clippy::manual_is_multiple_of)]
 
+mod alloc_probe;
 mod assets;
 mod audio;
 mod bench;
@@ -34,6 +35,11 @@ pub mod simd;
 mod skel;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
+
+/// Счётчик аллокаций (фича `--bench-parse-allocs`, критерий ≤0,5 alloc/токен).
+/// Вне замера — один Relaxed-load на аллокацию, см. src/alloc_probe.rs.
+#[global_allocator]
+static GLOBAL_ALLOC: alloc_probe::Counting = alloc_probe::Counting;
 
 use hal::Hal;
 use interp::{env_define, env_new, CoreCtx, Gc, GlobalCell, LoadRegistry, Value};
@@ -95,6 +101,13 @@ fn main() {
     }
     if args.bench_parse {
         if let Err(e) = bench::run_bench_parse() {
+            eprintln!("[ошибка] {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.bench_parse_allocs {
+        if let Err(e) = bench::run_bench_parse_allocs() {
             eprintln!("[ошибка] {}", e);
             std::process::exit(1);
         }
