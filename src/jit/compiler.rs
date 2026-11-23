@@ -82,7 +82,7 @@ impl Compiler {
                 Some(())
             }
             Value::Sym(s) => {
-                let (_, slot) = self.vars.iter().rev().find(|(n, _)| n == s)?;
+                let (_, slot) = self.vars.iter().rev().find(|(n, _)| n.as_str() == &**s)?;
                 match *slot {
                     VarSlot::Arg(k) => self.ir.push(IrOp::Arg(k)),
                     VarSlot::Slot(id) => {
@@ -95,7 +95,7 @@ impl Compiler {
             }
             Value::List(items) if !items.is_empty() => {
                 let head = match &items[0] {
-                    Value::Sym(s) => s.as_str(),
+                    Value::Sym(s) => &**s,
                     _ => return None,
                 };
                 match head {
@@ -185,7 +185,7 @@ impl Compiler {
             _ => return None,
         };
         let (cc, a, b) = match (&items[0], items.len()) {
-            (Value::Sym(s), 3) => (s.as_str(), &items[1], &items[2]),
+            (Value::Sym(s), 3) => (&**s, &items[1], &items[2]),
             _ => return None,
         };
         let code = match cc {
@@ -329,7 +329,7 @@ impl Compiler {
             self.compile_expr(expr)?;
             self.ir.push(IrOp::Push);
             self.sp += 1;
-            bound.push((name, VarSlot::Slot(self.sp - 1)));
+            bound.push((name.to_string(), VarSlot::Slot(self.sp - 1)));
         }
         self.vars.extend(bound);
         let n_slots = self.sp - base_sp;
@@ -384,7 +384,7 @@ impl Compiler {
             };
             starts.push(self.ir.len());
             let is_else = match items.first() {
-                Some(Value::Sym(s)) => (s == "else" || s == "t") && k == last,
+                Some(Value::Sym(s)) => (&**s == "else" || &**s == "t") && k == last,
                 _ => false,
             };
             if !is_else {
@@ -454,7 +454,8 @@ impl Compiler {
             self.ir.push(IrOp::Push);
             self.sp += 1;
             n_slots += 1;
-            self.vars.push((name, VarSlot::Slot(self.sp - 1)));
+            self.vars
+                .push((name.to_string(), VarSlot::Slot(self.sp - 1)));
         }
         self.compile_expr(body)?;
         self.ir.push(IrOp::AdjustStack(n_slots));
