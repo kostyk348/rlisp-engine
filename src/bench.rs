@@ -682,6 +682,8 @@ fn load_corpus() -> Result<(Vec<(String, String)>, usize), String> {
 /// Сколько лексических токенов потребил бы парсер из этого исхода: скобки, кавычки,
 /// атомы (включая числа), строки как один токен. Комментарии — не токены: парсер их
 /// пропускает, не создавая Value, поэтому считать их токенами значит занизить метрику.
+/// Нужна только бенчмарку аллокаций: без фичи счётчика её никто не вызывает.
+#[cfg(feature = "count-allocs")]
 fn count_tokens(bytes: &[u8]) -> usize {
     let is_delim = |b: u8| {
         matches!(
@@ -729,49 +731,49 @@ fn count_tokens(bytes: &[u8]) -> usize {
 
 /// Критерий ТЗ (`rlisp-engine-tz.md` §2.1): аллокаций на ASCII-файл ≤ 0,5/токен.
 /// Сборка: `cargo run --release --features count-allocs -- --bench-parse-allocs`.
+#[cfg(not(feature = "count-allocs"))]
 pub fn run_bench_parse_allocs() -> Result<(), String> {
-    #[cfg(not(feature = "count-allocs"))]
-    {
-        return Err("соберите с фичей счётчика: cargo run --release --features count-allocs -- --bench-parse-allocs".into());
-    }
-    #[cfg(feature = "count-allocs")]
-    {
-        let (corpus, total_bytes) = load_corpus()?;
-        println!("== rlisp-engine :: аллокации парсера (критерий ≤ 0,5/токен) ==");
-        println!("корпус: {} файлов, {} байт", corpus.len(), total_bytes);
-        let mut allocs_total = 0u64;
-        let mut tokens_total = 0usize;
-        for (name, src) in &corpus {
-            Counting::reset();
-            let _values = interp::parse_program(src)?;
-            let tokens = count_tokens(src.as_bytes());
-            let allocs = Counting::count();
-            allocs_total += allocs;
-            tokens_total += tokens;
-            let per = allocs as f64 / tokens.max(1) as f64;
-            println!(
-                "  {:<28} токенов {:>6}  аллокаций {:>6}  = {:.3}/токен",
-                name, tokens, allocs, per
-            );
-        }
-        let per_total = allocs_total as f64 / tokens_total.max(1) as f64;
+    Err("соберите с фичей счётчика: cargo run --release --features count-allocs -- --bench-parse-allocs".into())
+}
+
+/// Считает аллокации парсера; требует фичу счётчика.
+#[cfg(feature = "count-allocs")]
+pub fn run_bench_parse_allocs() -> Result<(), String> {
+    let (corpus, total_bytes) = load_corpus()?;
+    println!("== rlisp-engine :: аллокации парсера (критерий ≤ 0,5/токен) ==");
+    println!("корпус: {} файлов, {} байт", corpus.len(), total_bytes);
+    let mut allocs_total = 0u64;
+    let mut tokens_total = 0usize;
+    for (name, src) in &corpus {
+        Counting::reset();
+        let _values = interp::parse_program(src)?;
+        let tokens = count_tokens(src.as_bytes());
+        let allocs = Counting::count();
+        allocs_total += allocs;
+        tokens_total += tokens;
+        let per = allocs as f64 / tokens.max(1) as f64;
         println!(
-            "итого: {} токенов, {} аллокаций = {:.3}/токен — {}",
-            tokens_total,
-            allocs_total,
-            per_total,
-            if per_total <= 0.5 {
-                "OK (≤ 0,5)"
-            } else {
-                "ПРОВАЛ (> 0,5)"
-            }
+            "  {:<28} токенов {:>6}  аллокаций {:>6}  = {:.3}/токен",
+            name, tokens, allocs, per
         );
-        if per_total > 0.5 {
-            return Err(format!(
-                "критерий аллокаций провален: {:.3}/токен > 0,5",
-                per_total
-            ));
-        }
-        Ok(())
     }
+    let per_total = allocs_total as f64 / tokens_total.max(1) as f64;
+    println!(
+        "итого: {} токенов, {} аллокаций = {:.3}/токен — {}",
+        tokens_total,
+        allocs_total,
+        per_total,
+        if per_total <= 0.5 {
+            "OK (≤ 0,5)"
+        } else {
+            "ПРОВАЛ (> 0,5)"
+        }
+    );
+    if per_total > 0.5 {
+        return Err(format!(
+            "критерий аллокаций провален: {:.3}/токен > 0,5",
+            per_total
+        ));
+    }
+    Ok(())
 }

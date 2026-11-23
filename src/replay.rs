@@ -332,7 +332,7 @@ pub fn encode_input(v: &Value) -> Option<String> {
 pub fn decode_input(s: &str) -> Option<Value> {
     let (kind, key) = s.split_once(':')?;
     Some(Value::List(vec![
-        Value::Sym(intern(&kind.to_string())),
+        Value::Sym(intern(kind)),
         Value::Str(key.to_string()),
     ]))
 }
