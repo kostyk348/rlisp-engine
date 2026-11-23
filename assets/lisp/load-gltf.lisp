@@ -179,7 +179,16 @@
            (cond ((not uri) 0) ; изображения из bufferView не поддержаны
                  ((string=? (gltf-prefix uri 5) "data:")
                   (texture-load-png (base64-decode uri)))
-                 (else (texture-load (string-append base uri))))))))
+                 (else
+                 ;; Модель без текстуры — это модель без текстуры, а не
+                 ;; упавшая игра: glTF-конвертеры регулярно теряют часть
+                 ;; изображений (и на Linux ещё и регистр букв в именах).
+                 ;; Отсутствующий файл даёт 0 («нет текстуры»), как и
+                 ;; изображение из bufferView.
+                 (let ((path (string-append base uri)))
+                   (if (file-exists? path)
+                       (texture-load path)
+                       0))))))))
 
 ;; ——— матрицы узлов ———
 

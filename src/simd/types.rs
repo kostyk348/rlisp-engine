@@ -82,12 +82,16 @@ pub fn calibrate() -> SimdLevel {
             }
         }
         let _ = ACTIVE.set(best);
-        best
+        // Возвращаем не «что намерили», а «что действительно в силе»: если
+        // ACTIVE уже инициализирован (например, active_level() вызвали из
+        // другого потока тестов), set() молча ничего не делает, и прежний
+        // возврат `best` расходился с реальностью — тест падал на ровном месте.
+        active_level()
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = ACTIVE.set(SimdLevel::Scalar);
-        SimdLevel::Scalar
+        active_level()
     }
 }
 
