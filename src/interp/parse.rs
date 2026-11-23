@@ -133,7 +133,10 @@ fn parse_expr_b(bytes: &[u8], pos: &mut usize) -> Result<Value, String> {
         b'(' | b'[' => {
             let close: u8 = if c == b'(' { b')' } else { b']' };
             *pos += 1;
-            let mut items = Vec::new();
+            // Ёмкость — оценка просмотром вперёд (ТЗ: арена значений при разборе).
+            // Подсказка не обязана быть точной: промах только означает, что Vec дорастёт,
+            // корректности это не меняет. Эталонный reader ниже оставлен как есть.
+            let mut items = Vec::with_capacity(estimate_items(bytes, *pos));
             let mut tail: Option<Value> = None;
             loop {
                 *pos = skip_ws_b(bytes, *pos);
@@ -508,4 +511,70 @@ fn parse_atom(atom: &str) -> Result<Value, String> {
         return Ok(Value::Float(f));
     }
     Ok(Value::Sym(intern(atom)))
+}
+
+/// Оценка числа элементов списка до парной закрывающей скобки: одна цена SIMD-скана,
+/// зато ноль realloc-ростов в типичном списке. Оценка грубая и не обязана быть точной:
+/// промах по ёмкости лишь заставит Vec дорастать. Верхняя граница 4096 — защита
+/// от файла-половинки без закрывающих скобок.
+fn estimate_items(bytes: &[u8], mut pos: usize) -> usize {
+    const CAP_MAX: usize = 4096;
+    let mut depth = 1usize;
+    let mut items = 0usize;
+    let mut in_string = false;
+    while pos < bytes.len() && depth > 0 && items < CAP_MAX {
+        let b = bytes[pos];
+        if in_string {
+            if b == b'"' {
+                in_string = false;
+            }
+            if b == b'\\' {
+                pos += 2;
+                continue;
+            }
+            pos += 1;
+            continue;
+        }
+        match b {
+            b';' => {
+                pos = simd::find_byte(bytes, pos + 1, b'\n').unwrap_or(bytes.len());
+            }
+            b'(' | b'[' => {
+                if depth == 1 {
+                    items += 1;
+                }
+                depth += 1;
+                pos += 1;
+            }
+            b')' | b']' => {
+                depth -= 1;
+                pos += 1;
+            }
+            b'\'' | b'`' | b',' => {
+                if depth == 1 {
+                    items += 1;
+                }
+                pos += 1;
+            }
+            b if b.is_ascii_whitespace() => pos += 1,
+            _ => {
+                if depth == 1 {
+                    items += 1;
+                }
+                while pos < bytes.len() {
+                    let w = bytes[pos];
+                    if w.is_ascii_whitespace()
+                        || matches!(
+                            w,
+                            b'(' | b')' | b'[' | b']' | b'\'' | b'`' | b',' | b';' | b'"'
+                        )
+                    {
+                        break;
+                    }
+                    pos += 1;
+                }
+            }
+        }
+    }
+    items
 }
