@@ -519,10 +519,15 @@ fn parse_atom(atom: &str) -> Result<Value, String> {
 /// от файла-половинки без закрывающих скобок.
 fn estimate_items(bytes: &[u8], mut pos: usize) -> usize {
     const CAP_MAX: usize = 4096;
+    // Бюджет просмотра: без него N вложенных списков дают O(n^2) на adversarial-входе
+    // (тесты парсера включают такие). Точный подсчёт не нужен — это только подсказка
+    // ёмкости Vec; промах бюджета означает, что Vec дорастёт сам.
+    const LOOKAHEAD_MAX: usize = 8192;
+    let budget_end = (pos + LOOKAHEAD_MAX).min(bytes.len());
     let mut depth = 1usize;
     let mut items = 0usize;
     let mut in_string = false;
-    while pos < bytes.len() && depth > 0 && items < CAP_MAX {
+    while pos < budget_end && depth > 0 && items < CAP_MAX {
         let b = bytes[pos];
         if in_string {
             if b == b'"' {
