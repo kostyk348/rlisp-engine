@@ -66,7 +66,7 @@
 (define (effective-accuracy weapon-class accuracy-bonus distance)
   (let ((weapon (rule 'weapon weapon-class)))
     (let ((base (+ (table-get weapon 'accuracy) accuracy-bonus)))
-      (let ((chance (- (+ 70 base) (* 6 distance))))
+      (let ((chance (- base (* 6 distance))))
         (if (< chance 10) 10 (if (> chance 90) 90 chance))))))
 
 (define (roll-damage weapon)

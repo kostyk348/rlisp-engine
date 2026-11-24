@@ -22,9 +22,9 @@
        (string-append (number->string (car (damage-range pistol))) ".."
                       (number->string (car (cdr (damage-range pistol))))))
 
-(check "точность падает с дистанцией" (< (effective-accuracy "pistol" 0 8) (effective-accuracy "pistol" 0 1))
-       (string-append (number->string (effective-accuracy "pistol" 0 1)) "% → "
-                      (number->string (effective-accuracy "pistol" 0 8)) "%"))
+(check "точность падает с дистанцией" (< (effective-accuracy "pistol" 60 8) (effective-accuracy "pistol" 60 1))
+       (string-append (number->string (effective-accuracy "pistol" 60 1)) "% → "
+                      (number->string (effective-accuracy "pistol" 60 8)) "%"))
 (check "точность не ниже 10%" (= (effective-accuracy "heavy-cannon" 0 20) 10)
        (string-append (number->string (effective-accuracy "heavy-cannon" 0 20)) "%"))
 

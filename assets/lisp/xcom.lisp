@@ -10,6 +10,9 @@
 (load "assets/lisp/input.lisp")
 (load "assets/lisp/graphics.lisp")
 (load "assets/lisp/font.lisp")
+(load "assets/lisp/xcom_rules.lisp")
+(load "assets/lisp/mods.lisp")
+(load-mods)
 
 (window-create 640 480 "X-COM :: rlisp-engine")
 
@@ -77,11 +80,15 @@
   (let ((c (- 70 (* 6 d))))
     (if (< c 10) 10 (if (> c 90) 90 c))))
 
+;; Урон и шанс берутся из РУЛСЕТА: оружие и точность класса бойца — данные,
+;; а не константы. Моды их меняют — бой меняется без перезапуска.
 (define (roll-hit shooter target)
-  (let ((chance (hit-chance (distance shooter target)))
+  (let* ((weapon (rule 'weapon "pistol"))
+        (class-bonus (if (friendly? shooter) 60 0))
+        (chance (effective-accuracy "pistol" class-bonus (distance shooter target)))
         (roll (random-int 1 100)))
     (if (<= roll chance)
-        (let ((damage (random-int 2 5)))
+        (let ((damage (roll-damage weapon)))
           (table-set! target 'hp (- (table-get target 'hp) damage))
           (string-append (table-get shooter 'name) " → " (table-get target 'name)
                          ": шанс " (number->string chance) "%, бросок " (number->string roll)
