@@ -77,29 +77,29 @@ pub fn initial_seed() -> u64 {
 mod tests {
     use super::*;
 
+    // ГПСЧ у процесса один: RND_STATE — глобальный атомик, а cargo test гонит
+    // тесты параллельными потоками. Четыре отдельных теста перебивали друг
+    // другу seed «через стенку» (набегающая гонка: 144 passed по везению,
+    // потом локальный прогон поймал расхождение). Все инварианты контракта —
+    // в ОДНОМ последовательном тесте.
     #[test]
-    fn одинаковый_seed_даёт_одинаковую_последовательность() {
+    fn контракт_детерминизма_rng() {
+        // одинаковый seed даёт одинаковую последовательность
         set_seed(20261014);
         let a: Vec<f64> = (0..16).map(|_| next_random()).collect();
         set_seed(20261014);
         let b: Vec<f64> = (0..16).map(|_| next_random()).collect();
         assert_eq!(a, b);
         assert!(a.iter().all(|v| (0.0..1.0).contains(v)));
-    }
 
-    #[test]
-    fn разный_seed_даёт_разную_последовательность() {
+        // разный seed даёт разную последовательность
         set_seed(1);
-        let a: Vec<f64> = (0..8).map(|_| next_random()).collect();
+        let a1: Vec<f64> = (0..8).map(|_| next_random()).collect();
         set_seed(2);
-        let b: Vec<f64> = (0..8).map(|_| next_random()).collect();
-        assert_ne!(a, b);
-    }
+        let b2: Vec<f64> = (0..8).map(|_| next_random()).collect();
+        assert_ne!(a1, b2);
 
-    #[test]
-    fn initial_seed_фиксируется_первым() {
-        // INITIAL_SEED — на процесс (как и сам прогон), поэтому проверяем
-        // инвариант: дальнейшие смены seed не двигают seed начала прогона
+        // seed прогона фиксируется первым и дальше не двигается
         set_seed(424242);
         let first = initial_seed();
         assert_ne!(first, 0);
@@ -107,10 +107,8 @@ mod tests {
         set_seed(777);
         assert_eq!(initial_seed(), first, "seed прогона не должен меняться");
         assert_eq!(seed(), 777, "а рабочий seed — меняется");
-    }
 
-    #[test]
-    fn seed_не_искажается() {
+        // seed не искажается; ноль = seed по времени
         set_seed(20261014);
         assert_eq!(seed(), 20261014);
         set_seed(0);
