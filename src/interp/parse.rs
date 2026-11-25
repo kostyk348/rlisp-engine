@@ -561,11 +561,23 @@ fn estimate_items(bytes: &[u8], mut pos: usize) -> usize {
                 }
                 pos += 1;
             }
+            // Начало строки — отдельный элемент списка. Без этой ветки `"` попадал
+            // в ветку «атом», которая останавливалась ровно на нём, не сдвинув pos:
+            // просмотр вперёд крутился на месте, и любой список с первым строковым
+            // элементом вешал парсер (а с ним и весь `cargo test`).
+            b'"' => {
+                if depth == 1 {
+                    items += 1;
+                }
+                in_string = true;
+                pos += 1;
+            }
             b if b.is_ascii_whitespace() => pos += 1,
             _ => {
                 if depth == 1 {
                     items += 1;
                 }
+                let start = pos;
                 while pos < bytes.len() {
                     let w = bytes[pos];
                     if w.is_ascii_whitespace()
@@ -576,6 +588,11 @@ fn estimate_items(bytes: &[u8], mut pos: usize) -> usize {
                     {
                         break;
                     }
+                    pos += 1;
+                }
+                // Гарантия прогресса: любой разделитель, до которого дошли здесь,
+                // дальше разбирается своими ветками; если их нет — хотя бы сдвиг.
+                if pos == start {
                     pos += 1;
                 }
             }

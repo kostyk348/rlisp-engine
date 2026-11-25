@@ -354,3 +354,39 @@ fn hash_int_детерминизм_диапазон_и_лавина() {
     // нецелый аргумент — честная ошибка
     assert!(ev_res(&cell, "(hash-int 1.5)").is_err());
 }
+
+/// Регресс (v0.21.0, коммит «ёмкость списков — оценка просмотром вперёд»):
+/// подсказка ёмкости `estimate_items` не знала начала строки. На `"` она
+/// останавливалась, не сдвинув позицию, и крутилась на месте — парсер вешал
+/// любой список, чей элемент начинается со строки, а вместе с ним и `cargo test`
+/// (в CI это выглядело как «7 job-ов в in_progress навсегда»).
+#[test]
+fn список_с_первым_строковым_элементом_не_вешает_парсер() {
+    // простейший случай: строка — первый элемент
+    match &parse_program("(\"brute\" 11.5 -3.0)").unwrap()[0] {
+        Value::List(items) => {
+            assert_eq!(
+                items.len(),
+                3,
+                "элементов: {}",
+                fmt_value(&Value::List(items.clone()))
+            );
+            assert!(matches!(&items[0], Value::Str(s) if s == "brute"));
+            assert!(matches!(&items[2], Value::Float(f) if *f == -3.0));
+        }
+        other => panic!("ожидался список, получено {:?}", fmt_value(other)),
+    }
+    // экранированная кавычка внутри строки и комментарий в том же списке
+    match &parse_program("(list \"a\\\"b\" ; хвост\n  2)").unwrap()[0] {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3);
+            assert!(matches!(&items[1], Value::Str(s) if s == "a\"b"));
+        }
+        other => panic!("ожидался список, получено {:?}", fmt_value(other)),
+    }
+    // строка — первый элемент вложенного списка
+    match &parse_program("((\"x\") 1)").unwrap()[0] {
+        Value::List(items) => assert_eq!(items.len(), 2),
+        other => panic!("ожидался список, получено {:?}", fmt_value(other)),
+    }
+}
